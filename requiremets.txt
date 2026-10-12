@@ -1,6 +1,0 @@
-streamlit
-requests
-psycopg2-binary
-pandas
-plotly
-python-dotenv
