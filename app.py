@@ -144,11 +144,11 @@ def get_colaboradores_from_db() -> pd.DataFrame:
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT colaborador_azure, colaborador_ponto, capacity FROM colaboradores ORDER BY colaborador_ponto")
+            cur.execute("SELECT colaborador_azure, colaborador_ponto, capacity, nivel FROM colaboradores ORDER BY colaborador_ponto")
             df = pd.DataFrame(cur.fetchall())
         conn.close()
         return df
-    except: return pd.DataFrame(columns=["colaborador_azure", "colaborador_ponto", "capacity"])
+    except: return pd.DataFrame(columns=["colaborador_azure", "colaborador_ponto", "capacity", "nivel"])
 
 def get_horasponto_from_db(ano: int, mes: int) -> pd.DataFrame:
     db_url = os.getenv("NEON_DATABASE_URL")
@@ -172,6 +172,37 @@ def get_dias_uteis_from_db(ano: int, mes: int) -> float:
         return float(row['horas_uteis']) if row else 0.0
     except: return 0.0
 
+def get_capacity_by_nivel(nivel: str) -> float:
+    """Busca o valor de capacity na tabela capacity baseado no nível do colaborador."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    
+    if not db_url or not nivel:
+        return 0.0
+    
+    # ✅ Normaliza o nível: remove TODOS os caracteres de whitespace
+    nivel_limpo = "".join(nivel.split())
+    
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Busca comparando após remover espaços do banco também
+            cur.execute("""
+                SELECT capacity FROM capacity 
+                WHERE REPLACE(REPLACE(REPLACE(TRIM(nivel), E'\\n', ''), E'\\r', ''), E'\\t', '') = %s
+                LIMIT 1
+            """, (nivel_limpo,))
+            row = cur.fetchone()
+        conn.close()
+        
+        if row:
+            return float(row['capacity'])
+        else:
+            logger.warning(f"Nível '{nivel}' (limpo: '{nivel_limpo}') não encontrado")
+            return 0.0
+            
+    except Exception as e:
+        logger.error(f"Erro ao buscar capacity para nível '{nivel}': {e}")
+        return 0.0
 def listar_usuarios(tipo_usuario: str, usuario_id: int) -> List[Dict]:
     db_url = os.getenv("NEON_DATABASE_URL")
     if not db_url: return []
@@ -586,7 +617,7 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
     
     # ✅ Filtro com reset automático
     filtro = st.sidebar.multiselect(
-        "👥 Filtrar por Colaborador",
+        " Filtrar por Colaborador",
         options=sorted(df_tarefas["Colaborador"].unique()),
         default=sorted(df_tarefas["Colaborador"].unique()),
         key="filtro_colab_tab"
@@ -610,10 +641,10 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
     st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("---")
-    st.subheader("📋 Detalhamento por Colaborador")
+    st.subheader(" Detalhamento por Colaborador")
     for colaborador in sorted(df_tarefas["Colaborador"].unique()):
         df_col = df_tarefas[df_tarefas["Colaborador"] == colaborador].sort_values(["Projeto", "Sprint"])
-        with st.expander(f"👤 **{colaborador}** — {len(df_col)} tarefa(s) | {df_col['Horas Apontadas'].sum():.2f}h", expanded=False):
+        with st.expander(f" **{colaborador}** — {len(df_col)} tarefa(s) | {df_col['Horas Apontadas'].sum():.2f}h", expanded=False):
             st.dataframe(df_col[["Projeto", "Sprint", "ID", "Tipo", "Título", "Horas Apontadas", "Link"]], use_container_width=True, hide_index=True,
                 column_config={
                     "Projeto": st.column_config.TextColumn("Projeto"),
@@ -633,8 +664,22 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         if 'filtro_horas' in st.session_state:
             del st.session_state.filtro_horas
     
-    colaborador_capacity = {str(row["colaborador_ponto"]).strip(): float(row.get("capacity") or 0) for _, row in df_colaboradores.iterrows()}
+    # ✅ Cria dicionário de níveis por colaborador
+    colaborador_nivel = {}
+    for _, row in df_colaboradores.iterrows():
+        ponto_name = str(row["colaborador_ponto"]).strip()
+        nivel = str(row.get("nivel", "")).strip()
+        if ponto_name:
+            colaborador_nivel[ponto_name] = nivel
     
+    # ✅ Busca capacity de cada nível da tabela capacity
+    nivel_capacity = {}
+    niveis_unicos = set(colaborador_nivel.values())
+    for nivel in niveis_unicos:
+        if nivel:
+            nivel_capacity[nivel] = get_capacity_by_nivel(nivel)
+    
+    horas_azure = {}
     azure_to_ponto = {}
     for _, row in df_colaboradores.iterrows():
         azure_name = str(row["colaborador_azure"]).strip().lower()
@@ -642,7 +687,6 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         if azure_name:
             azure_to_ponto[azure_name] = ponto_name
     
-    horas_azure = {}
     for item_id, item in all_workitems_colab.items():
         f = item.get("fields", {})
         if f.get("System.State") != "Done":
@@ -658,7 +702,11 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         ponto_name = str(hp_row["colaborador_ponto"]).strip()
         horas_ponto = float(hp_row["horas_ponto"]) if pd.notna(hp_row.get("horas_ponto")) else 0.0
         afastamento = float(hp_row["afastamento"]) if pd.notna(hp_row.get("afastamento")) else 0.0
-        capacity = colaborador_capacity.get(ponto_name, 0.0)
+        
+        # ✅ Busca capacity via nível
+        nivel = colaborador_nivel.get(ponto_name, "")
+        capacity = nivel_capacity.get(nivel, 0.0)
+        
         capacity_calculado = (horas_ponto / 8.0) * capacity if (horas_ponto > 0 and capacity > 0) else 0.0
         lista_consolidada.append({"Colaborador": ponto_name, "Ponto": horas_ponto, "Azure": horas_azure.get(ponto_name, 0.0), "Afastamento": afastamento, "Capacity": capacity_calculado})
     
@@ -673,7 +721,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
     col1.metric("🕐 Total Ponto", f"{df_consolidado['Ponto'].sum():.2f} h")
     col2.metric("💻 Total Azure", f"{df_consolidado['Azure'].sum():.2f} h")
     col3.metric("🏖️ Total Afastamento", f"{df_consolidado['Afastamento'].sum():.2f} h")
-    col4.metric(" Total Capacity", f"{df_consolidado['Capacity'].sum():.2f} h")
+    col4.metric("📊 Total Capacity", f"{df_consolidado['Capacity'].sum():.2f} h")
     
     st.markdown("---")
     st.subheader("📊 Horas por Colaborador")
@@ -841,7 +889,7 @@ def render_login_screen():
                 submitted = st.form_submit_button("Gerar Token de Recuperação")
                 if submitted:
                     if not email:
-                        st.error("⚠️ Informe o e-mail.")
+                        st.error("️ Informe o e-mail.")
                     else:
                         sucesso, msg, token = solicitar_reset_senha(email)
                         if sucesso:
@@ -919,7 +967,7 @@ def render_login_screen():
                     if not senha or len(senha) < 6: erros.append("Senha deve ter no mínimo 6 caracteres")
                     if senha != confirmar_senha: erros.append("Senhas não coincidem")
                     if erros:
-                        for erro in erros: st.error(f"️ {erro}")
+                        for erro in erros: st.error(f"⚠️ {erro}")
                     else:
                         sucesso, msg = criar_usuario_com_apikey(nome, email, senha, apikey.strip())
                         if sucesso:
@@ -928,7 +976,7 @@ def render_login_screen():
                             st.session_state.login_view = "login"
                             st.rerun()
                         else:
-                            st.error(f"❌ {msg}")
+                            st.error(f" {msg}")
             
             if st.button("Já possuo senha (Entrar)", use_container_width=True):
                 st.session_state.login_view = "login"
@@ -955,7 +1003,7 @@ def main():
     if st.sidebar.button("⚙️ Perfil", use_container_width=True):
         st.session_state.show_perfil = True
         st.rerun()
-    if st.sidebar.button(" Sair do Sistema", use_container_width=True):
+    if st.sidebar.button("🚪 Sair do Sistema", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.user_info = None
         st.session_state.show_perfil = False
@@ -968,7 +1016,7 @@ def main():
             st.rerun()
         return
 
-    st.title(" Dashboard de Acompanhamento de Entregas")
+    st.title("📊 Dashboard de Acompanhamento de Entregas")
     st.caption("Azure DevOps • SME-Spassu • Sprint Tracker")
     st.markdown("---")
     st.sidebar.header("⚙️ Configuração & Filtros")
@@ -984,7 +1032,7 @@ def main():
         st.stop()
 
     current_year = datetime.now().year
-    year = st.sidebar.selectbox("📅 Ano", options=[current_year + 1, current_year, current_year - 1], index=1 if current_year == 2026 else 0)
+    year = st.sidebar.selectbox(" Ano", options=[current_year + 1, current_year, current_year - 1], index=1 if current_year == 2026 else 0)
     month_names = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
     month_name = st.sidebar.selectbox("📅 Mês", options=month_names, index=datetime.now().month - 1)
     month_num = month_names.index(month_name) + 1
@@ -999,7 +1047,7 @@ def main():
     if not sprints_by_project: st.warning(f"⚠️ Nenhuma sprint encontrada em {month_name}/{year}."); st.stop()
 
     sprint_options = [f"{s['path']}" for proj, sprints in sprints_by_project.items() for s in sprints]
-    selected_sprints_display = st.sidebar.multiselect(f" Sprints", options=sprint_options, default=sprint_options)
+    selected_sprints_display = st.sidebar.multiselect(f"🏃 Sprints", options=sprint_options, default=sprint_options)
     sprint_to_info = {}
     for proj, sprints in sprints_by_project.items():
         for s in sprints: sprint_to_info[f"{proj}|||{s['path']}"] = (proj, s["path"])
@@ -1010,7 +1058,7 @@ def main():
                 selected_sprint_paths.append((proj, path)); paths_by_project.setdefault(proj, []).append(path); break
 
     selected_wi_types = st.sidebar.multiselect("📋 Tipo de Work Item", options=ALL_WI_TYPES, default=DEFAULT_WI_TYPES)
-    selected_states = st.sidebar.multiselect("🎯 Situação", options=ALL_STATES, default=ALL_STATES)
+    selected_states = st.sidebar.multiselect(" Situação", options=ALL_STATES, default=ALL_STATES)
 
     with st.spinner(" Buscando work items..."):
         all_ids_by_project = {proj: fetch_workitems_ids_by_project(pat, proj, paths)[0] for proj, paths in paths_by_project.items()}
@@ -1066,7 +1114,7 @@ def main():
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("📋 Total de Itens", total_items)
         col2.metric("⏱️ Total de Horas", f"{total_hours:.2f} h")
-        col3.metric("📊 Situação", f"✅ {done_resolved} | 🔄 {in_progress_todo}")
+        col3.metric(" Situação", f"✅ {done_resolved} | 🔄 {in_progress_todo}")
         col4.metric("📖 Histórias em Aberto", historias_nao_done, help="Product Backlog Items com status diferente de Done")
         st.markdown("---")
         if parents_data:
@@ -1111,7 +1159,7 @@ def main():
             csv_backlogs, count_backlogs = generate_csv_backlogs_nao_done(parents_data)
             col_csv3, col_csv4 = st.columns(2)
             with col_csv3:
-                st.download_button(f"️ Baixar CSV - Histórias em Aberto ({count_backlogs} itens)", data=csv_backlogs, file_name=f"backlogs_abertos_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Product Backlog Items com status diferente de Done")
+                st.download_button(f"⬇️ Baixar CSV - Histórias em Aberto ({count_backlogs} itens)", data=csv_backlogs, file_name=f"backlogs_abertos_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Product Backlog Items com status diferente de Done")
             with col_csv4:
                 st.info(f"📊 **{count_backlogs}** histórias em aberto encontradas no período")
             st.markdown("---")
@@ -1129,13 +1177,13 @@ def main():
             st.warning("⚠️ Nenhum item após filtros.")
     
     with tab_colaborador:
-        st.subheader("👥 Tarefas por Colaborador")
+        st.subheader(" Tarefas por Colaborador")
         st.info(f"Período: **{month_name}/{year}** | Apenas **State = Done**")
         if not df_colaboradores.empty: render_colaborador_tab(all_workitems_colab, project_of_item_colab, df_colaboradores, year, month_name)
         else: st.warning("⚠️ Tabela de colaboradores vazia.")
     
     with tab_horas:
-        st.subheader(" Horas por Colaborador")
+        st.subheader("🕐 Horas por Colaborador")
         if df_colaboradores.empty: st.warning("⚠️ Tabela de colaboradores vazia.")
         elif df_horasponto.empty: st.warning(f"⚠️ Sem dados em `horasponto` para {month_name}/{year}.")
         elif horas_uteis_mensais == 0: st.warning(f"⚠️ Sem dados em `dias_uteis_mensais` para {month_name}/{year}.")
