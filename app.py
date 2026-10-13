@@ -21,7 +21,6 @@ ALL_WI_TYPES = ["Task", "Product Backlog Item", "Melhoria", "HotFix", "Design", 
 ALL_STATES = ["To Do", "In Progress", "Resolved", "Done"]
 DEFAULT_WI_TYPES = [t for t in ALL_WI_TYPES if t not in ["Task", "Débito Técnico"]]
 
-# URLs das imagens no GitHub
 SPASSU_LOGO_URL = "https://raw.githubusercontent.com/marcuscaldevilla-lang/sme-dashboard/main/spassu4.png"
 SME_LOGO_URL = "https://raw.githubusercontent.com/marcuscaldevilla-lang/sme-dashboard/main/sme.png"
 
@@ -346,6 +345,35 @@ def get_assigned_to_name(assigned_to: Any) -> str:
     if isinstance(assigned_to, dict): return assigned_to.get("displayName", "Não atribuído")
     return str(assigned_to)
 
+def encontrar_colaborador_ponto(assigned_name, azure_to_ponto):
+    """Função auxiliar para encontrar o nome do colaborador no sistema de ponto com matching em 4 níveis"""
+    if assigned_name == "Não atribuído":
+        return assigned_name
+    
+    azure_key = assigned_name.strip().lower()
+    if "<" in azure_key:
+        azure_key = azure_key.split("<")[0].strip()
+    
+    # 1. Matching exato
+    if azure_key in azure_to_ponto:
+        return azure_to_ponto[azure_key]
+    
+    # 2. Matching parcial (contém)
+    for azure_name, ponto_name in azure_to_ponto.items():
+        if azure_key in azure_name or azure_name in azure_key:
+            return ponto_name
+    
+    # 3. Matching por palavras (2+ palavras em comum)
+    palavras_azure = azure_key.split()
+    for azure_name, ponto_name in azure_to_ponto.items():
+        palavras_db = azure_name.split()
+        palavras_comuns = set(palavras_azure) & set(palavras_db)
+        if len(palavras_comuns) >= 2:
+            return ponto_name
+    
+    # 4. Fallback: retorna o nome original do Azure
+    return assigned_name
+
 def generate_csv_parents_only(parents_data, children_map, all_workitems):
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';', quoting=csv.QUOTE_ALL)
@@ -511,6 +539,13 @@ def render_table_html(parents_data, children_map, all_workitems, total_hours):
     st.markdown(full_html, unsafe_allow_html=True)
 
 def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradores, year, month_name):
+    # ✅ Detecta mudança de período e reseta o filtro
+    periodo_atual = f"{year}-{month_name}"
+    if st.session_state.get('filtro_colab_periodo') != periodo_atual:
+        st.session_state.filtro_colab_periodo = periodo_atual
+        if 'filtro_colab_tab' in st.session_state:
+            del st.session_state.filtro_colab_tab
+    
     azure_to_ponto = {}
     for _, row in df_colaboradores.iterrows():
         azure_name = str(row["colaborador_azure"]).strip().lower()
@@ -523,23 +558,15 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
         f = item.get("fields", {})
         if f.get("System.State") != "Done":
             continue
+        
         assigned_to = f.get("System.AssignedTo")
         assigned_name = get_assigned_to_name(assigned_to)
-        colaborador_ponto = assigned_name
-        if assigned_name != "Não atribuído":
-            azure_key = assigned_name.strip().lower()
-            if "<" in azure_key:
-                azure_key = azure_key.split("<")[0].strip()
-            if azure_key in azure_to_ponto:
-                colaborador_ponto = azure_to_ponto[azure_key]
-            else:
-                for azure_name, ponto_name in azure_to_ponto.items():
-                    if azure_key in azure_name or azure_name in azure_key:
-                        colaborador_ponto = ponto_name
-                        break
+        colaborador_ponto = encontrar_colaborador_ponto(assigned_name, azure_to_ponto)
+        
         proj = project_of_item.get(item_id, "")
         completed_work = float(f.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0)
         link = f"{ADO_BASE_URL}/{urllib.parse.quote(proj, safe='')}/_workitems/edit/{item_id}"
+        
         tarefas_list.append({
             "Colaborador": colaborador_ponto,
             "Projeto": proj,
@@ -556,6 +583,8 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
         return
     
     df_tarefas = pd.DataFrame(tarefas_list)
+    
+    # ✅ Filtro com reset automático
     filtro = st.sidebar.multiselect(
         "👥 Filtrar por Colaborador",
         options=sorted(df_tarefas["Colaborador"].unique()),
@@ -597,18 +626,31 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
                 })
 
 def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_mensais, all_workitems_colab, project_of_item, year, month_name):
+    # ✅ Detecta mudança de período e reseta o filtro
+    periodo_atual = f"{year}-{month_name}"
+    if st.session_state.get('filtro_horas_periodo') != periodo_atual:
+        st.session_state.filtro_horas_periodo = periodo_atual
+        if 'filtro_horas' in st.session_state:
+            del st.session_state.filtro_horas
+    
     colaborador_capacity = {str(row["colaborador_ponto"]).strip(): float(row.get("capacity") or 0) for _, row in df_colaboradores.iterrows()}
+    
+    azure_to_ponto = {}
+    for _, row in df_colaboradores.iterrows():
+        azure_name = str(row["colaborador_azure"]).strip().lower()
+        ponto_name = str(row["colaborador_ponto"]).strip()
+        if azure_name:
+            azure_to_ponto[azure_name] = ponto_name
+    
     horas_azure = {}
     for item_id, item in all_workitems_colab.items():
         f = item.get("fields", {})
-        if f.get("System.State") != "Done": continue
+        if f.get("System.State") != "Done":
+            continue
+        
         assigned_name = get_assigned_to_name(f.get("System.AssignedTo"))
-        colaborador_ponto = assigned_name
-        if assigned_name != "Não atribuído":
-            azure_key = assigned_name.strip().lower().split("<")[0].strip() if "<" in assigned_name else assigned_name.strip().lower()
-            for _, row in df_colaboradores.iterrows():
-                if azure_key in str(row["colaborador_azure"]).strip().lower() or str(row["colaborador_azure"]).strip().lower() in azure_key:
-                    colaborador_ponto = str(row["colaborador_ponto"]).strip(); break
+        colaborador_ponto = encontrar_colaborador_ponto(assigned_name, azure_to_ponto)
+        
         horas_azure[colaborador_ponto] = horas_azure.get(colaborador_ponto, 0) + float(f.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0)
     
     lista_consolidada = []
@@ -621,14 +663,17 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         lista_consolidada.append({"Colaborador": ponto_name, "Ponto": horas_ponto, "Azure": horas_azure.get(ponto_name, 0.0), "Afastamento": afastamento, "Capacity": capacity_calculado})
     
     df_consolidado = pd.DataFrame(lista_consolidada).sort_values("Colaborador", ascending=True)
-    filtro = st.sidebar.multiselect("👥 Filtrar por Colaborador", options=sorted(df_consolidado["Colaborador"].unique()), default=sorted(df_consolidado["Colaborador"].unique()), key="filtro_horas")
-    if filtro: df_consolidado = df_consolidado[df_consolidado["Colaborador"].isin(filtro)]
+    
+    # ✅ Filtro com reset automático
+    filtro = st.sidebar.multiselect(" Filtrar por Colaborador", options=sorted(df_consolidado["Colaborador"].unique()), default=sorted(df_consolidado["Colaborador"].unique()), key="filtro_horas")
+    if filtro:
+        df_consolidado = df_consolidado[df_consolidado["Colaborador"].isin(filtro)]
     
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric(" Total Ponto", f"{df_consolidado['Ponto'].sum():.2f} h")
+    col1.metric("🕐 Total Ponto", f"{df_consolidado['Ponto'].sum():.2f} h")
     col2.metric("💻 Total Azure", f"{df_consolidado['Azure'].sum():.2f} h")
     col3.metric("🏖️ Total Afastamento", f"{df_consolidado['Afastamento'].sum():.2f} h")
-    col4.metric("📊 Total Capacity", f"{df_consolidado['Capacity'].sum():.2f} h")
+    col4.metric(" Total Capacity", f"{df_consolidado['Capacity'].sum():.2f} h")
     
     st.markdown("---")
     st.subheader("📊 Horas por Colaborador")
@@ -652,7 +697,7 @@ def render_crud_perfil():
     tipo_usuario = usuario_info.get('cargo', 'User')
     usuario_id = usuario_info.get('id')
     st.markdown("---")
-    st.subheader("️ Gerenciamento de Perfil")
+    st.subheader("⚙️ Gerenciamento de Perfil")
     usuarios = listar_usuarios(tipo_usuario, usuario_id)
     if not usuarios:
         st.warning("Nenhum usuário encontrado.")
@@ -833,7 +878,7 @@ def render_login_screen():
                 submitted = st.form_submit_button("Redefinir Senha")
                 if submitted:
                     if not token:
-                        st.error("️ Token é obrigatório")
+                        st.error("⚠️ Token é obrigatório")
                     elif not nova_senha or len(nova_senha) < 6:
                         st.error("⚠️ Senha deve ter no mínimo 6 caracteres")
                     elif nova_senha != confirmar_senha:
@@ -848,7 +893,7 @@ def render_login_screen():
                             st.session_state.login_view = "login"
                             st.rerun()
                         else:
-                            st.error(f" {msg}")
+                            st.error(f"❌ {msg}")
             
             if st.button("← Voltar ao Login", use_container_width=True):
                 st.session_state.login_view = "login"
@@ -903,11 +948,11 @@ def main():
         render_login_screen()
         return
 
-    st.set_page_config(page_title="Dashboard de Entregas - SME Spassu", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title="Dashboard de Entregas - SME Spassu", page_icon="", layout="wide", initial_sidebar_state="expanded")
     st.sidebar.markdown("---")
     st.sidebar.success(f"👤 {st.session_state.user_info['nome_completo']}")
     st.sidebar.caption(f"Tipo: {st.session_state.user_info.get('cargo', 'User')}")
-    if st.sidebar.button("️ Perfil", use_container_width=True):
+    if st.sidebar.button("⚙️ Perfil", use_container_width=True):
         st.session_state.show_perfil = True
         st.rerun()
     if st.sidebar.button(" Sair do Sistema", use_container_width=True):
@@ -945,7 +990,7 @@ def main():
     month_num = month_names.index(month_name) + 1
 
     all_projects = get_active_projects_from_db()
-    selected_projects = st.sidebar.multiselect(" Projetos", options=all_projects, default=all_projects)
+    selected_projects = st.sidebar.multiselect("🏢 Projetos", options=all_projects, default=all_projects)
     if not selected_projects: st.info("Selecione ao menos um projeto."); st.stop()
 
     with st.spinner("🔄 Buscando sprints..."):
@@ -967,7 +1012,7 @@ def main():
     selected_wi_types = st.sidebar.multiselect("📋 Tipo de Work Item", options=ALL_WI_TYPES, default=DEFAULT_WI_TYPES)
     selected_states = st.sidebar.multiselect("🎯 Situação", options=ALL_STATES, default=ALL_STATES)
 
-    with st.spinner("🔍 Buscando work items..."):
+    with st.spinner(" Buscando work items..."):
         all_ids_by_project = {proj: fetch_workitems_ids_by_project(pat, proj, paths)[0] for proj, paths in paths_by_project.items()}
         all_workitems, project_of_item = {}, {}
         for proj, ids in all_ids_by_project.items():
@@ -983,7 +1028,7 @@ def main():
                 items, _ = fetch_workitems_details(pat, proj, ids)
                 for item_id, item in items.items(): all_workitems_colab[item_id] = item; project_of_item_colab[item_id] = proj
 
-    with st.spinner(" Buscando hierarquia..."):
+    with st.spinner("🔗 Buscando hierarquia..."):
         children_map = {}
         for proj, paths in paths_by_project.items():
             relations, _ = fetch_hierarchy_links_by_project(pat, proj, paths)
@@ -1004,7 +1049,7 @@ def main():
     df_horasponto = get_horasponto_from_db(year, month_num)
     horas_uteis_mensais = get_dias_uteis_from_db(year, month_num)
 
-    tab_lista, tab_colaborador, tab_horas = st.tabs(["📋 Lista Geral", "👥 Tarefas por Colaborador", "🕐 Horas por Colaborador"])
+    tab_lista, tab_colaborador, tab_horas = st.tabs(["📋 Lista Geral", " Tarefas por Colaborador", " Horas por Colaborador"])
     
     with tab_lista:
         total_items = len(parents_data)
@@ -1022,7 +1067,7 @@ def main():
         col1.metric("📋 Total de Itens", total_items)
         col2.metric("⏱️ Total de Horas", f"{total_hours:.2f} h")
         col3.metric("📊 Situação", f"✅ {done_resolved} | 🔄 {in_progress_todo}")
-        col4.metric(" Histórias em Aberto", historias_nao_done, help="Product Backlog Items com status diferente de Done")
+        col4.metric("📖 Histórias em Aberto", historias_nao_done, help="Product Backlog Items com status diferente de Done")
         st.markdown("---")
         if parents_data:
             type_counts = {}
@@ -1061,12 +1106,12 @@ def main():
                 csv_complete = generate_csv_complete(parents_data, children_map, all_workitems)
                 st.download_button("⬇️ Baixar CSV (Completo)", data=csv_complete, file_name=f"sme_sprints_{year}_{month_name}_completo.csv", mime="text/csv", use_container_width=True)
             st.markdown("---")
-            st.markdown("**📖 Histórias (Product Backlog Item) em Aberto**")
+            st.markdown("** Histórias (Product Backlog Item) em Aberto**")
             st.caption("Product Backlog Items com status diferente de Done no período selecionado")
             csv_backlogs, count_backlogs = generate_csv_backlogs_nao_done(parents_data)
             col_csv3, col_csv4 = st.columns(2)
             with col_csv3:
-                st.download_button(f"⬇️ Baixar CSV - Histórias em Aberto ({count_backlogs} itens)", data=csv_backlogs, file_name=f"backlogs_abertos_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Product Backlog Items com status diferente de Done")
+                st.download_button(f"️ Baixar CSV - Histórias em Aberto ({count_backlogs} itens)", data=csv_backlogs, file_name=f"backlogs_abertos_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Product Backlog Items com status diferente de Done")
             with col_csv4:
                 st.info(f"📊 **{count_backlogs}** histórias em aberto encontradas no período")
             st.markdown("---")
@@ -1075,7 +1120,7 @@ def main():
             csv_tasks, count_tasks = generate_csv_tasks_done_sem_horas(parents_data)
             col_csv5, col_csv6 = st.columns(2)
             with col_csv5:
-                st.download_button(f"⬇️ Baixar CSV - Tasks Done sem Horas ({count_tasks} itens)", data=csv_tasks, file_name=f"tasks_done_sem_horas_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Tasks com State=Done e CompletedWork=0 ou vazio")
+                st.download_button(f"️ Baixar CSV - Tasks Done sem Horas ({count_tasks} itens)", data=csv_tasks, file_name=f"tasks_done_sem_horas_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Tasks com State=Done e CompletedWork=0 ou vazio")
             with col_csv6:
                 st.info(f"📊 **{count_tasks}** tasks concluídas sem horas apontadas")
             st.markdown("---")
@@ -1090,7 +1135,7 @@ def main():
         else: st.warning("⚠️ Tabela de colaboradores vazia.")
     
     with tab_horas:
-        st.subheader("🕐 Horas por Colaborador")
+        st.subheader(" Horas por Colaborador")
         if df_colaboradores.empty: st.warning("⚠️ Tabela de colaboradores vazia.")
         elif df_horasponto.empty: st.warning(f"⚠️ Sem dados em `horasponto` para {month_name}/{year}.")
         elif horas_uteis_mensais == 0: st.warning(f"⚠️ Sem dados em `dias_uteis_mensais` para {month_name}/{year}.")
