@@ -144,7 +144,7 @@ def get_colaboradores_from_db() -> pd.DataFrame:
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT colaborador_azure, colaborador_ponto, capacity, nivel FROM colaboradores ORDER BY colaborador_ponto")
+            cur.execute("SELECT colaborador_azure, colaborador_ponto, nivel FROM colaboradores ORDER BY colaborador_ponto")
             df = pd.DataFrame(cur.fetchall())
         conn.close()
         return df
