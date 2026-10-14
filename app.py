@@ -1070,14 +1070,11 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
         st.info(f"✅ Faturamento existente encontrado para **{month_name}/{year}** (ID: {faturamento_existente['id']})")
         df_detalhes = buscar_detalhes_faturamento(faturamento_existente['id'])
         if not df_detalhes.empty:
-            # Converte datas para string no formato brasileiro
-            for col in ['data_inicio', 'data_saida']:
-                if col in df_detalhes.columns:
-                    df_detalhes[col] = df_detalhes[col].apply(
-                        lambda x: x.strftime("%d/%m/%Y") if pd.notna(x) else ""
-                    )
-            # Renomeia colunas para o formato esperado
+            # ✅ Normalizar nomes das colunas para o formato esperado
             df_detalhes = df_detalhes.rename(columns={
+                'profissional': 'Profissional',
+                'cargo': 'Cargo',
+                'nivel': 'Nível',
                 'data_inicio': 'Data de Início',
                 'promocao_cargo': 'Promoção de Cargo',
                 'novo_colaborador': 'Novo Colaborador',
@@ -1089,6 +1086,14 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
                 'valor_profissional': 'Valor Profissional',
                 'valor_recalculado': 'Valor Recalculado'
             })
+            
+            # Converter datas para string no formato brasileiro
+            for col in ['Data de Início', 'Data de Saída']:
+                if col in df_detalhes.columns:
+                    df_detalhes[col] = df_detalhes[col].apply(
+                        lambda x: x.strftime("%d/%m/%Y") if pd.notna(x) else ""
+                    )
+            
             st.session_state.df_faturamento_exibido = df_detalhes
             st.session_state.total_faturado_exibido = faturamento_existente['total_faturado']
             st.session_state.faturamento_calculado = True
@@ -1195,7 +1200,7 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
             }
         )
     else:
-        st.info(" Clique em **🧮 Calcular Faturamento** para gerar o faturamento do período.")
+        st.info("👆 Clique em **🧮 Calcular Faturamento** para gerar o faturamento do período.")
 
 def render_crud_perfil():
     usuario_info = st.session_state.user_info
