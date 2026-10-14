@@ -8,12 +8,15 @@ import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="Qween | Acompanhamento da Execução", page_icon="", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Qween | Acompanhamento da Execução", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 
 ADO_ORG = "SME-Spassu"
 ADO_BASE_URL = f"https://dev.azure.com/{ADO_ORG}"
@@ -141,14 +144,26 @@ def get_active_projects_from_db() -> List[str]:
 
 def get_colaboradores_from_db() -> pd.DataFrame:
     db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        logger.error("NEON_DATABASE_URL não configurado")
+        return pd.DataFrame(columns=["colaborador_azure", "colaborador_ponto", "cargo", "nivel", "data_inicio", "promocao", "reposicao", "data_saida"])
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT colaborador_azure, colaborador_ponto, nivel FROM colaboradores ORDER BY colaborador_ponto")
-            df = pd.DataFrame(cur.fetchall())
+            cur.execute("""
+                SELECT colaborador_azure, colaborador_ponto, cargo, nivel, 
+                       data_inicio, promocao, reposicao, data_saida
+                FROM colaboradores 
+                ORDER BY colaborador_ponto
+            """)
+            rows = cur.fetchall()
+            logger.info(f"get_colaboradores_from_db: {len(rows)} colaboradores encontrados")
+            df = pd.DataFrame(rows)
         conn.close()
         return df
-    except: return pd.DataFrame(columns=["colaborador_azure", "colaborador_ponto", "capacity", "nivel"])
+    except Exception as e:
+        logger.error(f"Erro ao buscar colaboradores: {e}")
+        return pd.DataFrame(columns=["colaborador_azure", "colaborador_ponto", "cargo", "nivel", "data_inicio", "promocao", "reposicao", "data_saida"])
 
 def get_horasponto_from_db(ano: int, mes: int) -> pd.DataFrame:
     db_url = os.getenv("NEON_DATABASE_URL")
@@ -172,37 +187,61 @@ def get_dias_uteis_from_db(ano: int, mes: int) -> float:
         return float(row['horas_uteis']) if row else 0.0
     except: return 0.0
 
-def get_capacity_by_nivel(nivel: str) -> float:
-    """Busca o valor de capacity na tabela capacity baseado no nível do colaborador."""
+def get_valores_from_db() -> pd.DataFrame:
     db_url = os.getenv("NEON_DATABASE_URL")
-    
-    if not db_url or not nivel:
-        return 0.0
-    
-    # ✅ Normaliza o nível: remove TODOS os caracteres de whitespace
-    nivel_limpo = "".join(nivel.split())
-    
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Busca comparando após remover espaços do banco também
+            cur.execute("SELECT nivel, valor FROM valores")
+            df = pd.DataFrame(cur.fetchall())
+        conn.close()
+        return df
+    except: return pd.DataFrame(columns=["nivel", "valor"])
+
+def get_capacity_by_nivel(nivel: str) -> float:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url or not nivel:
+        return 0.0
+    nivel_limpo = "".join(nivel.split())
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT capacity FROM capacity 
-                WHERE REPLACE(REPLACE(REPLACE(TRIM(nivel), E'\\n', ''), E'\\r', ''), E'\\t', '') = %s
+                WHERE REPLACE(REPLACE(REPLACE(TRIM(CAST(nivel AS VARCHAR)), E'\\n', ''), E'\\r', ''), E'\\t', '') = %s
                 LIMIT 1
             """, (nivel_limpo,))
             row = cur.fetchone()
         conn.close()
-        
         if row:
             return float(row['capacity'])
         else:
-            logger.warning(f"Nível '{nivel}' (limpo: '{nivel_limpo}') não encontrado")
+            logger.warning(f"Nível '{nivel}' não encontrado na tabela capacity")
             return 0.0
-            
     except Exception as e:
         logger.error(f"Erro ao buscar capacity para nível '{nivel}': {e}")
         return 0.0
+
+def limpar_valor_monetario(valor) -> float:
+    if valor is None or pd.isna(valor):
+        return 0.0
+    valor_str = str(valor).strip()
+    valor_str = valor_str.replace('$', '').replace('R$', '').replace(' ', '')
+    if ',' in valor_str and '.' in valor_str:
+        ultima_virgula = valor_str.rfind(',')
+        ultimo_ponto = valor_str.rfind('.')
+        if ultima_virgula > ultimo_ponto:
+            valor_str = valor_str.replace('.', '').replace(',', '.')
+        else:
+            valor_str = valor_str.replace(',', '')
+    elif ',' in valor_str:
+        valor_str = valor_str.replace(',', '.')
+    try:
+        return float(valor_str)
+    except (ValueError, TypeError):
+        logger.warning(f"Não foi possível converter valor: '{valor}'")
+        return 0.0
+
 def listar_usuarios(tipo_usuario: str, usuario_id: int) -> List[Dict]:
     db_url = os.getenv("NEON_DATABASE_URL")
     if not db_url: return []
@@ -277,13 +316,13 @@ def validate_ado_api_key(pat: str) -> Tuple[bool, str]:
     url = f"{ADO_BASE_URL}/_apis/projects?api-version=7.1&$top=1"
     try:
         response = requests.get(url, headers=get_ado_headers(pat), timeout=15)
-        if response.status_code == 401: return False, "API Azure inválida: autenticação não autorizada (401). Verifique sua API Key."
-        elif response.status_code == 403: return False, "API Azure inválida: acesso proibido (403). Sua API Key não tem permissões suficientes."
+        if response.status_code == 401: return False, "API Azure inválida: autenticação não autorizada (401)."
+        elif response.status_code == 403: return False, "API Azure inválida: acesso proibido (403)."
         elif response.status_code == 404: return False, "API Azure inválida: organização não encontrada (404)."
-        elif response.status_code != 200: return False, f"API Azure inválida: erro {response.status_code} ao conectar."
+        elif response.status_code != 200: return False, f"API Azure inválida: erro {response.status_code}."
         return True, "API Key válida."
     except requests.exceptions.ConnectionError:
-        return False, "API Azure inválida: não foi possível conectar ao Azure DevOps."
+        return False, "API Azure inválida: não foi possível conectar."
     except Exception as e:
         return False, f"API Azure inválida: {str(e)}"
 
@@ -365,6 +404,9 @@ def format_date(date_str: Optional[str]) -> str:
 
 def format_hours(hours: Optional[float]) -> str: return f"{float(hours):.2f}" if hours is not None else "0.00"
 
+def format_moeda_brl(valor: float) -> str:
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
 def esc(text: str) -> str:
     if text is None: return ""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
@@ -377,32 +419,22 @@ def get_assigned_to_name(assigned_to: Any) -> str:
     return str(assigned_to)
 
 def encontrar_colaborador_ponto(assigned_name, azure_to_ponto):
-    """Função auxiliar para encontrar o nome do colaborador no sistema de ponto com matching em 4 níveis"""
     if assigned_name == "Não atribuído":
         return assigned_name
-    
     azure_key = assigned_name.strip().lower()
     if "<" in azure_key:
         azure_key = azure_key.split("<")[0].strip()
-    
-    # 1. Matching exato
     if azure_key in azure_to_ponto:
         return azure_to_ponto[azure_key]
-    
-    # 2. Matching parcial (contém)
     for azure_name, ponto_name in azure_to_ponto.items():
         if azure_key in azure_name or azure_name in azure_key:
             return ponto_name
-    
-    # 3. Matching por palavras (2+ palavras em comum)
     palavras_azure = azure_key.split()
     for azure_name, ponto_name in azure_to_ponto.items():
         palavras_db = azure_name.split()
         palavras_comuns = set(palavras_azure) & set(palavras_db)
         if len(palavras_comuns) >= 2:
             return ponto_name
-    
-    # 4. Fallback: retorna o nome original do Azure
     return assigned_name
 
 def generate_csv_parents_only(parents_data, children_map, all_workitems):
@@ -467,6 +499,84 @@ def generate_csv_tasks_done_sem_horas(parents_data):
                 writer.writerow([proj, sprint, p["id"], f.get("System.Title", ""), get_assigned_to_name(f.get("System.AssignedTo")), f.get("System.State", ""), f"{completed_work_float:.2f}"])
                 count += 1
     return "\ufeff" + output.getvalue(), count
+
+def generate_excel_faturamento(df_faturamento: pd.DataFrame, mes: str, ano: int, dias_uteis: float, total_faturado: float) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Faturamento"
+    
+    header_font = Font(name='Montserrat', size=14, bold=True, color='FFFFFF')
+    header_fill = PatternFill(start_color='FF6600', end_color='FF6600', fill_type='solid')
+    info_font = Font(name='Montserrat', size=11, bold=True, color='333333')
+    data_font = Font(name='Montserrat', size=10)
+    money_font = Font(name='Montserrat', size=10, bold=True)
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    ws.merge_cells('A1:M1')
+    cell_title = ws['A1']
+    cell_title.value = f"FATURAMENTO - {mes}/{ano}"
+    cell_title.font = header_font
+    cell_title.fill = header_fill
+    cell_title.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 35
+    
+    ws.merge_cells('A2:M2')
+    cell_info = ws['A2']
+    cell_info.value = f"Dias Úteis: {dias_uteis:.0f} | Total Faturado: {format_moeda_brl(total_faturado)}"
+    cell_info.font = info_font
+    cell_info.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[2].height = 25
+    
+    headers = [
+        "Profissional", "Cargo", "Nível", "Data de Início", "Promoção de Cargo",
+        "Novo Colaborador", "Data de Saída", "Horas Trabalhadas", "Horas Afast Acordado",
+        "Horas Afast Legal", "Horas Arredondadas", "Valor Profissional", "Valor Recalculado"
+    ]
+    
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=col_num)
+        cell.value = header
+        cell.font = Font(name='Montserrat', size=10, bold=True, color='FFFFFF')
+        cell.fill = PatternFill(start_color='2C5282', end_color='2C5282', fill_type='solid')
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
+    
+    ws.row_dimensions[4].height = 35
+    
+    column_widths = [35, 20, 15, 15, 20, 25, 15, 18, 22, 18, 20, 20, 20]
+    for i, width in enumerate(column_widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+    
+    for row_num, (_, row) in enumerate(df_faturamento.iterrows(), 5):
+        ws.cell(row=row_num, column=1, value=row["Profissional"]).font = data_font
+        ws.cell(row=row_num, column=2, value=row["Cargo"]).font = data_font
+        ws.cell(row=row_num, column=3, value=row["Nível"]).font = data_font
+        ws.cell(row=row_num, column=4, value=row["Data de Início"]).font = data_font
+        ws.cell(row=row_num, column=5, value=row["Promoção de Cargo"]).font = data_font
+        ws.cell(row=row_num, column=6, value=row["Novo Colaborador"]).font = data_font
+        ws.cell(row=row_num, column=7, value=row["Data de Saída"]).font = data_font
+        ws.cell(row=row_num, column=8, value=row["Horas Trabalhadas"]).font = data_font
+        ws.cell(row=row_num, column=9, value=row["Horas Afast Acordado"]).font = data_font
+        ws.cell(row=row_num, column=10, value=row["Horas Afast Legal"]).font = data_font
+        ws.cell(row=row_num, column=11, value=row["Horas Arredondadas"]).font = data_font
+        ws.cell(row=row_num, column=12, value=row["Valor Profissional"]).font = money_font
+        ws.cell(row=row_num, column=13, value=row["Valor Recalculado"]).font = money_font
+        
+        ws.cell(row=row_num, column=12).number_format = 'R$ #,##0.00'
+        ws.cell(row=row_num, column=13).number_format = 'R$ #,##0.00'
+        
+        for col in range(1, 14):
+            ws.cell(row=row_num, column=col).border = thin_border
+    
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
 
 def render_table_html(parents_data, children_map, all_workitems, total_hours):
     css = """
@@ -570,7 +680,6 @@ def render_table_html(parents_data, children_map, all_workitems, total_hours):
     st.markdown(full_html, unsafe_allow_html=True)
 
 def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradores, year, month_name):
-    # ✅ Detecta mudança de período e reseta o filtro
     periodo_atual = f"{year}-{month_name}"
     if st.session_state.get('filtro_colab_periodo') != periodo_atual:
         st.session_state.filtro_colab_periodo = periodo_atual
@@ -589,15 +698,12 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
         f = item.get("fields", {})
         if f.get("System.State") != "Done":
             continue
-        
         assigned_to = f.get("System.AssignedTo")
         assigned_name = get_assigned_to_name(assigned_to)
         colaborador_ponto = encontrar_colaborador_ponto(assigned_name, azure_to_ponto)
-        
         proj = project_of_item.get(item_id, "")
         completed_work = float(f.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0)
         link = f"{ADO_BASE_URL}/{urllib.parse.quote(proj, safe='')}/_workitems/edit/{item_id}"
-        
         tarefas_list.append({
             "Colaborador": colaborador_ponto,
             "Projeto": proj,
@@ -614,14 +720,7 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
         return
     
     df_tarefas = pd.DataFrame(tarefas_list)
-    
-    # ✅ Filtro com reset automático
-    filtro = st.sidebar.multiselect(
-        " Filtrar por Colaborador",
-        options=sorted(df_tarefas["Colaborador"].unique()),
-        default=sorted(df_tarefas["Colaborador"].unique()),
-        key="filtro_colab_tab"
-    )
+    filtro = st.sidebar.multiselect("👥 Filtrar por Colaborador", options=sorted(df_tarefas["Colaborador"].unique()), default=sorted(df_tarefas["Colaborador"].unique()), key="filtro_colab_tab")
     if filtro:
         df_tarefas = df_tarefas[df_tarefas["Colaborador"].isin(filtro)]
     
@@ -641,10 +740,10 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
     st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("---")
-    st.subheader(" Detalhamento por Colaborador")
+    st.subheader("📋 Detalhamento por Colaborador")
     for colaborador in sorted(df_tarefas["Colaborador"].unique()):
         df_col = df_tarefas[df_tarefas["Colaborador"] == colaborador].sort_values(["Projeto", "Sprint"])
-        with st.expander(f" **{colaborador}** — {len(df_col)} tarefa(s) | {df_col['Horas Apontadas'].sum():.2f}h", expanded=False):
+        with st.expander(f"👤 **{colaborador}** — {len(df_col)} tarefa(s) | {df_col['Horas Apontadas'].sum():.2f}h", expanded=False):
             st.dataframe(df_col[["Projeto", "Sprint", "ID", "Tipo", "Título", "Horas Apontadas", "Link"]], use_container_width=True, hide_index=True,
                 column_config={
                     "Projeto": st.column_config.TextColumn("Projeto"),
@@ -657,14 +756,12 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
                 })
 
 def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_mensais, all_workitems_colab, project_of_item, year, month_name):
-    # ✅ Detecta mudança de período e reseta o filtro
     periodo_atual = f"{year}-{month_name}"
     if st.session_state.get('filtro_horas_periodo') != periodo_atual:
         st.session_state.filtro_horas_periodo = periodo_atual
         if 'filtro_horas' in st.session_state:
             del st.session_state.filtro_horas
     
-    # ✅ Cria dicionário de níveis por colaborador
     colaborador_nivel = {}
     for _, row in df_colaboradores.iterrows():
         ponto_name = str(row["colaborador_ponto"]).strip()
@@ -672,7 +769,6 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         if ponto_name:
             colaborador_nivel[ponto_name] = nivel
     
-    # ✅ Busca capacity de cada nível da tabela capacity
     nivel_capacity = {}
     niveis_unicos = set(colaborador_nivel.values())
     for nivel in niveis_unicos:
@@ -691,10 +787,8 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         f = item.get("fields", {})
         if f.get("System.State") != "Done":
             continue
-        
         assigned_name = get_assigned_to_name(f.get("System.AssignedTo"))
         colaborador_ponto = encontrar_colaborador_ponto(assigned_name, azure_to_ponto)
-        
         horas_azure[colaborador_ponto] = horas_azure.get(colaborador_ponto, 0) + float(f.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0)
     
     lista_consolidada = []
@@ -702,18 +796,13 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         ponto_name = str(hp_row["colaborador_ponto"]).strip()
         horas_ponto = float(hp_row["horas_ponto"]) if pd.notna(hp_row.get("horas_ponto")) else 0.0
         afastamento = float(hp_row["afastamento"]) if pd.notna(hp_row.get("afastamento")) else 0.0
-        
-        # ✅ Busca capacity via nível
         nivel = colaborador_nivel.get(ponto_name, "")
         capacity = nivel_capacity.get(nivel, 0.0)
-        
         capacity_calculado = (horas_ponto / 8.0) * capacity if (horas_ponto > 0 and capacity > 0) else 0.0
         lista_consolidada.append({"Colaborador": ponto_name, "Ponto": horas_ponto, "Azure": horas_azure.get(ponto_name, 0.0), "Afastamento": afastamento, "Capacity": capacity_calculado})
     
     df_consolidado = pd.DataFrame(lista_consolidada).sort_values("Colaborador", ascending=True)
-    
-    # ✅ Filtro com reset automático
-    filtro = st.sidebar.multiselect(" Filtrar por Colaborador", options=sorted(df_consolidado["Colaborador"].unique()), default=sorted(df_consolidado["Colaborador"].unique()), key="filtro_horas")
+    filtro = st.sidebar.multiselect("👥 Filtrar por Colaborador", options=sorted(df_consolidado["Colaborador"].unique()), default=sorted(df_consolidado["Colaborador"].unique()), key="filtro_horas")
     if filtro:
         df_consolidado = df_consolidado[df_consolidado["Colaborador"].isin(filtro)]
     
@@ -740,12 +829,380 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
     fig.update_layout(margin=dict(t=20, b=80, l=20, r=20), height=450, xaxis_tickangle=-45)
     st.plotly_chart(fig, use_container_width=True)
 
+# =============================================================================
+# FUNÇÕES DE PERSISTÊNCIA DE FATURAMENTO
+# =============================================================================
+
+def verificar_faturamento_existente(ano: int, mes: int) -> Optional[Dict]:
+    """Verifica se já existe faturamento para o ano/mês no banco"""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, ano, mes, qt_dias_uteis, total_faturado, criado_em 
+                FROM faturamento_mensal 
+                WHERE ano = %s AND mes = %s
+            """, (ano, mes))
+            result = cur.fetchone()
+        conn.close()
+        return result
+    except Exception as e:
+        logger.error(f"Erro ao verificar faturamento existente: {e}")
+        return None
+
+def buscar_detalhes_faturamento(id_faturamento: int) -> pd.DataFrame:
+    """Busca os detalhes do faturamento do banco"""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT profissional, cargo, nivel, data_inicio, promocao_cargo,
+                       novo_colaborador, data_saida, horas_trabalhadas, horas_afast_acordado,
+                       horas_afast_legal, horas_arredondadas, valor_profissional, valor_recalculado
+                FROM faturamento_detalhe
+                WHERE id_faturamento = %s
+                ORDER BY profissional
+            """, (id_faturamento,))
+            rows = cur.fetchall()
+        conn.close()
+        return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao buscar detalhes do faturamento: {e}")
+        return pd.DataFrame()
+
+def salvar_faturamento_no_banco(ano: int, mes: int, dias_uteis: float, total_faturado: float, df_detalhes: pd.DataFrame) -> Tuple[bool, str]:
+    """Salva o faturamento calculado no banco de dados"""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return False, "Banco de dados não configurado."
+    
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # ✅ Converter valores NumPy para tipos Python nativos
+            ano_int = int(ano)
+            mes_int = int(mes)
+            dias_uteis_float = float(dias_uteis)
+            total_faturado_float = float(total_faturado)
+            
+            cur.execute("""
+                INSERT INTO faturamento_mensal (ano, mes, qt_dias_uteis, total_faturado)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (ano, mes) DO UPDATE SET
+                    qt_dias_uteis = EXCLUDED.qt_dias_uteis,
+                    total_faturado = EXCLUDED.total_faturado,
+                    atualizado_em = CURRENT_TIMESTAMP
+                RETURNING id
+            """, (ano_int, mes_int, dias_uteis_float, total_faturado_float))
+            result = cur.fetchone()
+            id_faturamento = result['id']
+            
+            cur.execute("DELETE FROM faturamento_detalhe WHERE id_faturamento = %s", (id_faturamento,))
+            
+            for _, row in df_detalhes.iterrows():
+                data_ini = None
+                data_saida = None
+                if row["Data de Início"] and row["Data de Início"] != "":
+                    try:
+                        data_ini = datetime.strptime(str(row["Data de Início"]), "%d/%m/%Y").date()
+                    except:
+                        pass
+                if row["Data de Saída"] and row["Data de Saída"] != "":
+                    try:
+                        data_saida = datetime.strptime(str(row["Data de Saída"]), "%d/%m/%Y").date()
+                    except:
+                        pass
+                
+                # ✅ Converter TODOS os valores NumPy para tipos Python nativos
+                profissional = str(row["Profissional"])
+                cargo = str(row["Cargo"])
+                nivel = str(row["Nível"])
+                promocao = str(row["Promoção de Cargo"]) if row["Promoção de Cargo"] else ""
+                novo_colaborador = str(row["Novo Colaborador"]) if row["Novo Colaborador"] else ""
+                
+                horas_trabalhadas = float(row["Horas Trabalhadas"])
+                horas_afast_acordado = float(row["Horas Afast Acordado"])
+                horas_afast_legal = float(row["Horas Afast Legal"])
+                horas_arredondadas = float(row["Horas Arredondadas"])
+                valor_profissional = float(row["Valor Profissional"])
+                valor_recalculado = float(row["Valor Recalculado"])
+                
+                cur.execute("""
+                    INSERT INTO faturamento_detalhe 
+                    (id_faturamento, profissional, cargo, nivel, data_inicio, promocao_cargo,
+                     novo_colaborador, data_saida, horas_trabalhadas, horas_afast_acordado,
+                     horas_afast_legal, horas_arredondadas, valor_profissional, valor_recalculado)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    int(id_faturamento),
+                    profissional,
+                    cargo,
+                    nivel,
+                    data_ini,
+                    promocao,
+                    novo_colaborador,
+                    data_saida,
+                    horas_trabalhadas,
+                    horas_afast_acordado,
+                    horas_afast_legal,
+                    horas_arredondadas,
+                    valor_profissional,
+                    valor_recalculado
+                ))
+            
+            conn.commit()
+        conn.close()
+        return True, f"Faturamento salvo com sucesso! ID: {id_faturamento}"
+    except Exception as e:
+        if conn: conn.rollback()
+        if conn: conn.close()
+        logger.error(f"Erro ao salvar faturamento: {e}")
+        return False, f"Erro ao salvar: {str(e)}"
+
+def deletar_faturamento_existente(ano: int, mes: int) -> Tuple[bool, str]:
+    """Deleta faturamento existente do banco"""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return False, "Banco de dados não configurado."
+    
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM faturamento_mensal 
+                WHERE ano = %s AND mes = %s
+            """, (ano, mes))
+            if cur.rowcount == 0:
+                conn.close()
+                return False, "Nenhum faturamento encontrado para deletar."
+            conn.commit()
+        conn.close()
+        return True, "Faturamento deletado com sucesso."
+    except Exception as e:
+        if conn: conn.rollback()
+        if conn: conn.close()
+        logger.error(f"Erro ao deletar faturamento: {e}")
+        return False, f"Erro ao deletar: {str(e)}"
+
+def calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis):
+    """Calcula o faturamento baseado nos dados fornecidos"""
+    nivel_valor = {}
+    for _, row in df_valores.iterrows():
+        nivel = str(row["nivel"]).strip()
+        valor = limpar_valor_monetario(row.get("valor"))
+        if nivel:
+            nivel_valor[nivel] = valor
+    
+    colaborador_horas = {}
+    for _, row in df_horasponto.iterrows():
+        ponto_name = str(row["colaborador_ponto"]).strip()
+        horas_ponto = float(row["horas_ponto"]) if pd.notna(row.get("horas_ponto")) else 0.0
+        afastamento = float(row["afastamento"]) if pd.notna(row.get("afastamento")) else 0.0
+        if ponto_name:
+            colaborador_horas[ponto_name] = {"horas_ponto": horas_ponto, "afastamento": afastamento}
+    
+    lista_faturamento = []
+    for _, row in df_colaboradores.iterrows():
+        colaborador_ponto = str(row["colaborador_ponto"]).strip()
+        cargo = str(row.get("cargo", "")).strip()
+        nivel = str(row.get("nivel", "")).strip()
+        data_inicio = row.get("data_inicio")
+        promocao = str(row.get("promocao", "")).strip() if pd.notna(row.get("promocao")) else ""
+        reposicao = str(row.get("reposicao", "")).strip() if pd.notna(row.get("reposicao")) else ""
+        data_saida = row.get("data_saida")
+        
+        horas_info = colaborador_horas.get(colaborador_ponto, {"horas_ponto": 0.0, "afastamento": 0.0})
+        horas_trabalhadas = horas_info["horas_ponto"]
+        horas_afast_legal = horas_info["afastamento"]
+        horas_afast_acordado = 0.0
+        
+        horas_arredondadas = horas_afast_acordado + horas_trabalhadas
+        valor_profissional = nivel_valor.get(nivel, 0.0)
+        valor_diario = valor_profissional / dias_uteis if dias_uteis > 0 else 0.0
+        valor_recalculado = round(horas_arredondadas * valor_diario, 2)
+        
+        lista_faturamento.append({
+            "Profissional": colaborador_ponto,
+            "Cargo": cargo,
+            "Nível": nivel,
+            "Data de Início": data_inicio.strftime("%d/%m/%Y") if pd.notna(data_inicio) else "",
+            "Promoção de Cargo": promocao,
+            "Novo Colaborador": reposicao,
+            "Data de Saída": data_saida.strftime("%d/%m/%Y") if pd.notna(data_saida) else "",
+            "Horas Trabalhadas": round(horas_trabalhadas, 2),
+            "Horas Afast Acordado": round(horas_afast_acordado, 2),
+            "Horas Afast Legal": round(horas_afast_legal, 2),
+            "Horas Arredondadas": round(horas_arredondadas, 2),
+            "Valor Profissional": round(valor_profissional, 2),
+            "Valor Recalculado": valor_recalculado
+        })
+    
+    return pd.DataFrame(lista_faturamento)
+
+def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_uteis, year, month_name, month_num):
+    """Renderiza a aba de Faturamento com lógica de persistência"""
+    st.subheader("💰 Faturamento por Colaborador")
+    st.info(f"Período: **{month_name}/{year}** | Dias úteis: **{dias_uteis:.0f}**")
+    
+    # Verifica se já existe faturamento no banco para este período
+    faturamento_existente = verificar_faturamento_existente(year, month_num)
+    
+    # Inicializa session_state para controle
+    if 'faturamento_calculado' not in st.session_state:
+        st.session_state.faturamento_calculado = False
+    if 'df_faturamento_exibido' not in st.session_state:
+        st.session_state.df_faturamento_exibido = None
+    if 'total_faturado_exibido' not in st.session_state:
+        st.session_state.total_faturado_exibido = 0.0
+    if 'mostrar_alerta_recuperar' not in st.session_state:
+        st.session_state.mostrar_alerta_recuperar = False
+    
+    # Se já existe no banco e ainda não foi calculado nesta sessão, carrega do banco
+    if faturamento_existente and not st.session_state.faturamento_calculado:
+        st.info(f"✅ Faturamento existente encontrado para **{month_name}/{year}** (ID: {faturamento_existente['id']})")
+        df_detalhes = buscar_detalhes_faturamento(faturamento_existente['id'])
+        if not df_detalhes.empty:
+            # Converte datas para string no formato brasileiro
+            for col in ['data_inicio', 'data_saida']:
+                if col in df_detalhes.columns:
+                    df_detalhes[col] = df_detalhes[col].apply(
+                        lambda x: x.strftime("%d/%m/%Y") if pd.notna(x) else ""
+                    )
+            # Renomeia colunas para o formato esperado
+            df_detalhes = df_detalhes.rename(columns={
+                'data_inicio': 'Data de Início',
+                'promocao_cargo': 'Promoção de Cargo',
+                'novo_colaborador': 'Novo Colaborador',
+                'data_saida': 'Data de Saída',
+                'horas_trabalhadas': 'Horas Trabalhadas',
+                'horas_afast_acordado': 'Horas Afast Acordado',
+                'horas_afast_legal': 'Horas Afast Legal',
+                'horas_arredondadas': 'Horas Arredondadas',
+                'valor_profissional': 'Valor Profissional',
+                'valor_recalculado': 'Valor Recalculado'
+            })
+            st.session_state.df_faturamento_exibido = df_detalhes
+            st.session_state.total_faturado_exibido = faturamento_existente['total_faturado']
+            st.session_state.faturamento_calculado = True
+            st.rerun()
+    
+    # Botão Calcular Faturamento (acima do grid)
+    st.markdown("---")
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn1:
+        if st.button(" Calcular Faturamento", use_container_width=True, type="primary"):
+            if faturamento_existente:
+                st.session_state.mostrar_alerta_recuperar = True
+                st.rerun()
+            else:
+                with st.spinner("Calculando faturamento..."):
+                    df_faturamento = calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis)
+                    total_faturado = df_faturamento["Valor Recalculado"].sum()
+                    
+                    sucesso, msg = salvar_faturamento_no_banco(year, month_num, dias_uteis, total_faturado, df_faturamento)
+                    
+                    if sucesso:
+                        st.session_state.df_faturamento_exibido = df_faturamento
+                        st.session_state.total_faturado_exibido = total_faturado
+                        st.session_state.faturamento_calculado = True
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+    
+    # Alerta de recálculo
+    if st.session_state.get('mostrar_alerta_recuperar'):
+        st.warning(f"⚠️ **Atenção:** Já existem dados de faturamento para **{month_name}/{year}** no banco de dados.")
+        st.info(f"ID do faturamento existente: **{faturamento_existente['id']}** | Total: **{format_moeda_brl(faturamento_existente['total_faturado'])}**")
+        
+        col_sim, col_nao = st.columns(2)
+        with col_sim:
+            if st.button("✅ Sim, Recalcular", use_container_width=True, type="primary"):
+                with st.spinner("Recalculando faturamento..."):
+                    sucesso_del, msg_del = deletar_faturamento_existente(year, month_num)
+                    if sucesso_del:
+                        df_faturamento = calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis)
+                        total_faturado = df_faturamento["Valor Recalculado"].sum()
+                        
+                        sucesso_save, msg_save = salvar_faturamento_no_banco(year, month_num, dias_uteis, total_faturado, df_faturamento)
+                        
+                        if sucesso_save:
+                            st.session_state.df_faturamento_exibido = df_faturamento
+                            st.session_state.total_faturado_exibido = total_faturado
+                            st.session_state.faturamento_calculado = True
+                            st.session_state.mostrar_alerta_recuperar = False
+                            st.success(f"✅ Faturamento recalculado e salvo! {msg_save}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg_save}")
+                    else:
+                        st.error(f"❌ {msg_del}")
+        
+        with col_nao:
+            if st.button("❌ Não, Cancelar", use_container_width=True):
+                st.session_state.mostrar_alerta_recuperar = False
+                st.rerun()
+    
+    # Exibe o grid se já foi calculado
+    if st.session_state.faturamento_calculado and st.session_state.df_faturamento_exibido is not None:
+        df_faturamento = st.session_state.df_faturamento_exibido
+        total_faturado = st.session_state.total_faturado_exibido
+        
+        st.markdown("---")
+        col_total1, col_total2 = st.columns([3, 1])
+        with col_total1:
+            st.markdown("### 💵 Total Faturado")
+        with col_total2:
+            st.metric(label="", value=format_moeda_brl(total_faturado))
+        st.markdown("---")
+        
+        excel_data = generate_excel_faturamento(df_faturamento, month_name, year, dias_uteis, total_faturado)
+        st.download_button(
+            "⬇️ Exportar Faturamento (Excel)",
+            data=excel_data,
+            file_name=f"faturamento_{year}_{month_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        st.markdown("---")
+        
+        st.dataframe(
+            df_faturamento,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Profissional": st.column_config.TextColumn("Profissional", width="large"),
+                "Cargo": st.column_config.TextColumn("Cargo"),
+                "Nível": st.column_config.TextColumn("Nível"),
+                "Data de Início": st.column_config.TextColumn("Data de Início"),
+                "Promoção de Cargo": st.column_config.TextColumn("Promoção de Cargo"),
+                "Novo Colaborador": st.column_config.TextColumn("Novo Colaborador"),
+                "Data de Saída": st.column_config.TextColumn("Data de Saída"),
+                "Horas Trabalhadas": st.column_config.NumberColumn("Horas Trabalhadas", format="%.2f h"),
+                "Horas Afast Acordado": st.column_config.NumberColumn("Horas Afast Acordado", format="%.2f h"),
+                "Horas Afast Legal": st.column_config.NumberColumn("Horas Afast Legal", format="%.2f h"),
+                "Horas Arredondadas": st.column_config.NumberColumn("Horas Arredondadas", format="%.2f h"),
+                "Valor Profissional": st.column_config.NumberColumn("Valor Profissional", format="R$ %.2f"),
+                "Valor Recalculado": st.column_config.NumberColumn("Valor Recalculado", format="R$ %.2f")
+            }
+        )
+    else:
+        st.info(" Clique em **🧮 Calcular Faturamento** para gerar o faturamento do período.")
+
 def render_crud_perfil():
     usuario_info = st.session_state.user_info
     tipo_usuario = usuario_info.get('cargo', 'User')
     usuario_id = usuario_info.get('id')
     st.markdown("---")
-    st.subheader("⚙️ Gerenciamento de Perfil")
+    st.subheader("️ Gerenciamento de Perfil")
     usuarios = listar_usuarios(tipo_usuario, usuario_id)
     if not usuarios:
         st.warning("Nenhum usuário encontrado.")
@@ -771,11 +1228,7 @@ def render_crud_perfil():
     )
     st.markdown("---")
     if tipo_usuario == 'Admin':
-        usuario_selecionado = st.selectbox(
-            "Selecione o usuário para editar:",
-            options=[f"{u['id']} - {u['nome']} ({u['email']})" for u in usuarios],
-            index=0
-        )
+        usuario_selecionado = st.selectbox("Selecione o usuário para editar:", options=[f"{u['id']} - {u['nome']} ({u['email']})" for u in usuarios], index=0)
         usuario_id_selecionado = int(usuario_selecionado.split(" - ")[0])
         usuario_dados = next((u for u in usuarios if u['id'] == usuario_id_selecionado), None)
     else:
@@ -839,16 +1292,12 @@ def render_crud_perfil():
 def render_login_screen():
     inject_custom_css()
     st.markdown('<div class="dotted-rings"><div class="ring ring-1"></div><div class="ring ring-2"></div><div class="ring ring-3"></div><div class="ring ring-4"></div><div class="ring ring-5"></div></div>', unsafe_allow_html=True)
-    
     col1, col2 = st.columns([1.1, 0.9], gap="large")
-    
     with col1:
         st.markdown('<div style="margin-top: 40px;"><span class="badge-qween">Qween Platform</span><h1 class="hero-title">Relatório Mensal de acompanhamento da Execução</h1><p class="hero-subtitle">Secretaria Municipal de Educação - SP</p></div>', unsafe_allow_html=True)
-
     with col2:
         st.markdown('<div class="auth-card">', unsafe_allow_html=True)
         view = st.session_state.get("login_view", "login")
-        
         if view == "login":
             st.markdown("<h2 style='color:white; font-weight:700;'>Entrar</h2>", unsafe_allow_html=True)
             st.markdown("<p style='color:#e6e6e6; margin-bottom:30px;'>Acesse com suas credenciais institucionais</p>", unsafe_allow_html=True)
@@ -871,7 +1320,6 @@ def render_login_screen():
                                 st.rerun()
                         else: st.error("E-mail ou senha inválidos.")
                     else: st.warning("Preencha todos os campos.")
-            
             st.markdown("")
             col_btn1, col_btn2 = st.columns([3, 1])
             with col_btn2:
@@ -880,7 +1328,6 @@ def render_login_screen():
             st.markdown('<div style="display:flex; align-items:center; text-align:center; margin:28px 0; color:rgba(255,255,255,0.7); font-size:0.8rem; font-weight:600;"><div style="flex:1; border-bottom:1px solid rgba(255,255,255,0.25); margin-right:12px;"></div>OU<div style="flex:1; border-bottom:1px solid rgba(255,255,255,0.25); margin-left:12px;"></div></div>', unsafe_allow_html=True)
             if st.button("Primeiro Acesso? Ativar Conta", use_container_width=True):
                 st.session_state.login_view = "register"; st.rerun()
-
         elif view == "forgot":
             st.markdown("<h2 style='color:white; font-weight:700;'>Recuperação de Senha</h2>", unsafe_allow_html=True)
             st.markdown("<p style='color:#e6e6e6; margin-bottom:30px;'>Insira seu e-mail para receber o token de recuperação</p>", unsafe_allow_html=True)
@@ -889,13 +1336,13 @@ def render_login_screen():
                 submitted = st.form_submit_button("Gerar Token de Recuperação")
                 if submitted:
                     if not email:
-                        st.error("️ Informe o e-mail.")
+                        st.error("⚠️ Informe o e-mail.")
                     else:
                         sucesso, msg, token = solicitar_reset_senha(email)
                         if sucesso:
                             st.success(f"✅ {msg}")
                             st.markdown("---")
-                            st.markdown("**🔑 Seu Token de Recuperação:**")
+                            st.markdown("** Seu Token de Recuperação:**")
                             st.markdown(f'<div class="token-box">{token}</div>', unsafe_allow_html=True)
                             st.warning("⚠️ **Guarde este token!** Ele será necessário no próximo passo.")
                             st.info(f"⏰ Token válido por **1 hora**")
@@ -904,18 +1351,15 @@ def render_login_screen():
                             st.session_state.go_to_reset = True
                         else:
                             st.error(f"❌ {msg}")
-            
             if st.session_state.get('go_to_reset'):
                 if st.button("Redefinir Senha Agora →", use_container_width=True):
                     st.session_state.login_view = "reset_password"
                     st.session_state.go_to_reset = False
                     st.rerun()
-            
             if st.button("← Voltar ao Login", use_container_width=True):
                 st.session_state.login_view = "login"
                 st.session_state.go_to_reset = False
                 st.rerun()
-
         elif view == "reset_password":
             st.markdown("<h2 style='color:white; font-weight:700;'>Redefinir Senha</h2>", unsafe_allow_html=True)
             st.markdown("<p style='color:#e6e6e6; margin-bottom:30px;'>Insira o token recebido e sua nova senha</p>", unsafe_allow_html=True)
@@ -928,7 +1372,7 @@ def render_login_screen():
                     if not token:
                         st.error("⚠️ Token é obrigatório")
                     elif not nova_senha or len(nova_senha) < 6:
-                        st.error("⚠️ Senha deve ter no mínimo 6 caracteres")
+                        st.error("️ Senha deve ter no mínimo 6 caracteres")
                     elif nova_senha != confirmar_senha:
                         st.error("⚠️ Senhas não coincidem")
                     else:
@@ -942,12 +1386,10 @@ def render_login_screen():
                             st.rerun()
                         else:
                             st.error(f"❌ {msg}")
-            
             if st.button("← Voltar ao Login", use_container_width=True):
                 st.session_state.login_view = "login"
                 st.session_state.go_to_reset = False
                 st.rerun()
-
         elif view == "register":
             st.markdown("<h2 style='color:white; font-weight:700;'>Primeiro Acesso</h2>", unsafe_allow_html=True)
             st.markdown("<p style='color:#e6e6e6; margin-bottom:30px;'>Crie sua conta para acessar o sistema</p>", unsafe_allow_html=True)
@@ -976,15 +1418,11 @@ def render_login_screen():
                             st.session_state.login_view = "login"
                             st.rerun()
                         else:
-                            st.error(f" {msg}")
-            
+                            st.error(f"❌ {msg}")
             if st.button("Já possuo senha (Entrar)", use_container_width=True):
                 st.session_state.login_view = "login"
                 st.rerun()
-        
         st.markdown('</div>', unsafe_allow_html=True)
-
-    # ✅ FOOTER COM LOGOS REAIS (imagens do GitHub)
     st.markdown(f'<div style="position:fixed;bottom:30px;right:40px;display:flex;align-items:center;gap:20px;z-index:100;"><img src="{SPASSU_LOGO_URL}" style="height:40px;"><div style="width:1px;height:40px;background:rgba(255,255,255,0.5);"></div><img src="{SME_LOGO_URL}" style="height:40px;"></div>', unsafe_allow_html=True)
 
 def main():
@@ -996,11 +1434,11 @@ def main():
         render_login_screen()
         return
 
-    st.set_page_config(page_title="Dashboard de Entregas - SME Spassu", page_icon="", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title="Dashboard de Entregas - SME Spassu", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
     st.sidebar.markdown("---")
     st.sidebar.success(f"👤 {st.session_state.user_info['nome_completo']}")
     st.sidebar.caption(f"Tipo: {st.session_state.user_info.get('cargo', 'User')}")
-    if st.sidebar.button("⚙️ Perfil", use_container_width=True):
+    if st.sidebar.button("️ Perfil", use_container_width=True):
         st.session_state.show_perfil = True
         st.rerun()
     if st.sidebar.button("🚪 Sair do Sistema", use_container_width=True):
@@ -1016,7 +1454,7 @@ def main():
             st.rerun()
         return
 
-    st.title("📊 Dashboard de Acompanhamento de Entregas")
+    st.title(" Dashboard de Acompanhamento de Entregas")
     st.caption("Azure DevOps • SME-Spassu • Sprint Tracker")
     st.markdown("---")
     st.sidebar.header("⚙️ Configuração & Filtros")
@@ -1032,7 +1470,7 @@ def main():
         st.stop()
 
     current_year = datetime.now().year
-    year = st.sidebar.selectbox(" Ano", options=[current_year + 1, current_year, current_year - 1], index=1 if current_year == 2026 else 0)
+    year = st.sidebar.selectbox("📅 Ano", options=[current_year + 1, current_year, current_year - 1], index=1 if current_year == 2026 else 0)
     month_names = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
     month_name = st.sidebar.selectbox("📅 Mês", options=month_names, index=datetime.now().month - 1)
     month_num = month_names.index(month_name) + 1
@@ -1058,7 +1496,7 @@ def main():
                 selected_sprint_paths.append((proj, path)); paths_by_project.setdefault(proj, []).append(path); break
 
     selected_wi_types = st.sidebar.multiselect("📋 Tipo de Work Item", options=ALL_WI_TYPES, default=DEFAULT_WI_TYPES)
-    selected_states = st.sidebar.multiselect(" Situação", options=ALL_STATES, default=ALL_STATES)
+    selected_states = st.sidebar.multiselect("🎯 Situação", options=ALL_STATES, default=ALL_STATES)
 
     with st.spinner(" Buscando work items..."):
         all_ids_by_project = {proj: fetch_workitems_ids_by_project(pat, proj, paths)[0] for proj, paths in paths_by_project.items()}
@@ -1096,8 +1534,13 @@ def main():
     df_colaboradores = get_colaboradores_from_db()
     df_horasponto = get_horasponto_from_db(year, month_num)
     horas_uteis_mensais = get_dias_uteis_from_db(year, month_num)
+    df_valores = get_valores_from_db()
 
-    tab_lista, tab_colaborador, tab_horas = st.tabs(["📋 Lista Geral", " Tarefas por Colaborador", " Horas por Colaborador"])
+    tipo_usuario = st.session_state.user_info.get('cargo', 'User')
+    if tipo_usuario in ['Admin', 'Gestor']:
+        tab_lista, tab_colaborador, tab_horas, tab_faturamento = st.tabs(["📋 Lista Geral", "👥 Tarefas por Colaborador", "🕐 Horas por Colaborador", " Faturamento"])
+    else:
+        tab_lista, tab_colaborador, tab_horas = st.tabs(["📋 Lista Geral", "👥 Tarefas por Colaborador", "🕐 Horas por Colaborador"])
     
     with tab_lista:
         total_items = len(parents_data)
@@ -1114,7 +1557,7 @@ def main():
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("📋 Total de Itens", total_items)
         col2.metric("⏱️ Total de Horas", f"{total_hours:.2f} h")
-        col3.metric(" Situação", f"✅ {done_resolved} | 🔄 {in_progress_todo}")
+        col3.metric("📊 Situação", f"✅ {done_resolved} | 🔄 {in_progress_todo}")
         col4.metric("📖 Histórias em Aberto", historias_nao_done, help="Product Backlog Items com status diferente de Done")
         st.markdown("---")
         if parents_data:
@@ -1138,13 +1581,13 @@ def main():
                 fig_type.update_traces(textposition='inside', textinfo='percent+label', textfont_size=11)
                 st.plotly_chart(fig_type, use_container_width=True)
             with col_chart2:
-                st.subheader("📊 Total por Situação")
+                st.subheader(" Total por Situação")
                 fig_state = px.pie(df_states, values="Quantidade", names="Situação", hole=0.5, color="Situação", color_discrete_map=state_colors, hover_data=["Quantidade", "Situação"])
                 fig_state.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=350, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5))
                 fig_state.update_traces(textposition='inside', textinfo='percent+label', textfont_size=11)
                 st.plotly_chart(fig_state, use_container_width=True)
             st.markdown("---")
-            st.subheader("📥 Exportar Dados")
+            st.subheader(" Exportar Dados")
             st.markdown("**📋 Work Items Gerais**")
             col_csv1, col_csv2 = st.columns(2)
             with col_csv1:
@@ -1154,12 +1597,12 @@ def main():
                 csv_complete = generate_csv_complete(parents_data, children_map, all_workitems)
                 st.download_button("⬇️ Baixar CSV (Completo)", data=csv_complete, file_name=f"sme_sprints_{year}_{month_name}_completo.csv", mime="text/csv", use_container_width=True)
             st.markdown("---")
-            st.markdown("** Histórias (Product Backlog Item) em Aberto**")
+            st.markdown("**📖 Histórias (Product Backlog Item) em Aberto**")
             st.caption("Product Backlog Items com status diferente de Done no período selecionado")
             csv_backlogs, count_backlogs = generate_csv_backlogs_nao_done(parents_data)
             col_csv3, col_csv4 = st.columns(2)
             with col_csv3:
-                st.download_button(f"⬇️ Baixar CSV - Histórias em Aberto ({count_backlogs} itens)", data=csv_backlogs, file_name=f"backlogs_abertos_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Product Backlog Items com status diferente de Done")
+                st.download_button(f"️ Baixar CSV - Histórias em Aberto ({count_backlogs} itens)", data=csv_backlogs, file_name=f"backlogs_abertos_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Product Backlog Items com status diferente de Done")
             with col_csv4:
                 st.info(f"📊 **{count_backlogs}** histórias em aberto encontradas no período")
             st.markdown("---")
@@ -1168,13 +1611,13 @@ def main():
             csv_tasks, count_tasks = generate_csv_tasks_done_sem_horas(parents_data)
             col_csv5, col_csv6 = st.columns(2)
             with col_csv5:
-                st.download_button(f"️ Baixar CSV - Tasks Done sem Horas ({count_tasks} itens)", data=csv_tasks, file_name=f"tasks_done_sem_horas_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Tasks com State=Done e CompletedWork=0 ou vazio")
+                st.download_button(f"⬇️ Baixar CSV - Tasks Done sem Horas ({count_tasks} itens)", data=csv_tasks, file_name=f"tasks_done_sem_horas_{year}_{month_name}.csv", mime="text/csv", use_container_width=True, help="Exporta Tasks com State=Done e CompletedWork=0 ou vazio")
             with col_csv6:
                 st.info(f"📊 **{count_tasks}** tasks concluídas sem horas apontadas")
             st.markdown("---")
             render_table_html(parents_data, children_map, all_workitems, total_hours)
         else:
-            st.warning("⚠️ Nenhum item após filtros.")
+            st.warning("️ Nenhum item após filtros.")
     
     with tab_colaborador:
         st.subheader(" Tarefas por Colaborador")
@@ -1188,6 +1631,18 @@ def main():
         elif df_horasponto.empty: st.warning(f"⚠️ Sem dados em `horasponto` para {month_name}/{year}.")
         elif horas_uteis_mensais == 0: st.warning(f"⚠️ Sem dados em `dias_uteis_mensais` para {month_name}/{year}.")
         else: render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_mensais, all_workitems_colab, project_of_item_colab, year, month_name)
+    
+    if tipo_usuario in ['Admin', 'Gestor']:
+        with tab_faturamento:
+            if df_colaboradores.empty:
+                st.warning("⚠️ Tabela de colaboradores vazia.")
+            elif df_horasponto.empty:
+                st.warning(f"⚠️ Sem dados em `horasponto` para {month_name}/{year}.")
+            elif df_valores.empty:
+                st.warning("⚠️ Tabela de valores vazia.")
+            else:
+                # ✅ CORREÇÃO: passando month_num como parâmetro adicional
+                render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, horas_uteis_mensais, year, month_name, month_num)
 
 if __name__ == "__main__":
     main()
