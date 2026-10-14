@@ -1537,7 +1537,7 @@ def main():
     df_valores = get_valores_from_db()
 
     tipo_usuario = st.session_state.user_info.get('cargo', 'User')
-    if tipo_usuario in ['Admin', 'Gestor']:
+    if tipo_usuario in ['Admin', 'Gestor', 'Auditor']:
         tab_lista, tab_colaborador, tab_horas, tab_faturamento = st.tabs(["📋 Lista Geral", "👥 Tarefas por Colaborador", "🕐 Horas por Colaborador", " Faturamento"])
     else:
         tab_lista, tab_colaborador, tab_horas = st.tabs(["📋 Lista Geral", "👥 Tarefas por Colaborador", "🕐 Horas por Colaborador"])
@@ -1632,7 +1632,7 @@ def main():
         elif horas_uteis_mensais == 0: st.warning(f"⚠️ Sem dados em `dias_uteis_mensais` para {month_name}/{year}.")
         else: render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_mensais, all_workitems_colab, project_of_item_colab, year, month_name)
     
-    if tipo_usuario in ['Admin', 'Gestor']:
+    if tipo_usuario in ['Admin', 'Gestor', 'Auditor']:
         with tab_faturamento:
             if df_colaboradores.empty:
                 st.warning("⚠️ Tabela de colaboradores vazia.")
