@@ -1090,7 +1090,9 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         capacity_calculado = (horas_ponto / 8.0) * capacity if (horas_ponto > 0 and capacity > 0) else 0.0
         
         horas_azure_colab = horas_azure.get(ponto_name, 0.0)
-        diferenca = horas_ponto - horas_azure_colab
+        
+        # ✅ CORREÇÃO: Diferença = Azure - Ponto
+        diferenca = horas_azure_colab - horas_ponto
         
         lista_consolidada.append({
             "Colaborador": ponto_name, 
@@ -1124,6 +1126,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
     def colorir_diferenca(val):
         if pd.isna(val):
             return ''
+        # ✅ Verde se positivo (Azure > Ponto), Vermelho se negativo (Azure < Ponto)
         if val > 0:
             return 'background-color: #d4edda; color: #155724'
         elif val < 0:
@@ -1131,7 +1134,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         else:
             return 'background-color: #fff3cd; color: #856404'
     
-    # ✅ Usando .map em vez de .applymap para compatibilidade com Pandas >= 2.1
+    # Usando .map para compatibilidade com Pandas >= 2.1
     styler = df_consolidado.style.map(colorir_diferenca, subset=['Diferença'])
     
     st.dataframe(
@@ -1144,7 +1147,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
             "Azure": st.column_config.NumberColumn("Azure (h)", format="%.2f h"), 
             "Afastamento": st.column_config.NumberColumn("Afastamento (h)", format="%.2f h"),
             "Capacity": st.column_config.NumberColumn("Capacity (h)", format="%.2f h"),
-            "Diferença": st.column_config.NumberColumn("Diferença (h)", format="%+.2f h", help="Positivo = excesso | Negativo = falta")
+            "Diferença": st.column_config.NumberColumn("Diferença (h)", format="%+.2f h", help="Positivo = excesso no Azure | Negativo = falta no Azure")
         }
     )
     
@@ -1156,7 +1159,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
     st.plotly_chart(fig, width="stretch")
     
     st.markdown("---")
-    st.subheader("⚖️ Diferença entre Ponto e Azure por Colaborador")
+    st.subheader("⚖️ Diferença entre Azure e Ponto por Colaborador")
     st.info("🟢 **Verde**: Horas excedentes no Azure | 🔴 **Vermelho**: Horas faltantes no Azure")
     
     df_diff = df_consolidado.copy()
