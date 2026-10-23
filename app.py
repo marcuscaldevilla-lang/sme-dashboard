@@ -1065,7 +1065,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
         capacity_calculado = (horas_ponto / 8.0) * capacity if (horas_ponto > 0 and capacity > 0) else 0.0
         
         horas_azure_colab = horas_azure.get(ponto_name, 0.0)
-        diferenca = horas_azure_colab - horas_ponto
+        diferenca = horas_azure_colab - capacity_calculado
         
         lista_consolidada.append({
             "Colaborador": ponto_name, 
@@ -1125,7 +1125,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
     st.plotly_chart(fig, width="stretch")
     
     st.markdown("---")
-    st.subheader("⚖️ Diferença entre Azure e Ponto por Colaborador")
+    st.subheader("⚖️ Diferença entre Azure e Capacity por Colaborador")
     st.info("🟢 **Verde**: Horas excedentes no Azure | 🔴 **Vermelho**: Horas faltantes no Azure")
     
     df_diff = df_consolidado.copy().sort_values('Diferença', ascending=False)
@@ -1664,7 +1664,7 @@ def render_metricas_tab(all_workitems, project_of_item, df_colaboradores, df_hor
     else: 
         st.success(f"✅ **Saudável:** Apenas {(manutencao_pct + debito_pct):.0f}% em manutenção/débito técnico")
 
-    # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
     # SECÇÃO 4: MÉTRICAS DE GESTÃO DE PESSOAS
     # -------------------------------------------------------------------------
     st.markdown("---")
@@ -1698,27 +1698,83 @@ def render_metricas_tab(all_workitems, project_of_item, df_colaboradores, df_hor
     
     if not df_top.empty:
         df_top_agg = df_top.groupby("Colaborador").agg({"Horas": "sum"}).reset_index()
+        
+        # Top 10: ordena do maior para o menor e inverte para o maior ficar no topo
         df_top_10 = df_top_agg.sort_values("Horas", ascending=False).head(10)
+        df_top_10 = df_top_10.iloc[::-1].reset_index(drop=True)
+        
+        # Bottom 10: ordena do menor para o maior e inverte para o menor ficar no topo
         df_bottom_10 = df_top_agg.sort_values("Horas", ascending=True).head(10)
+        df_bottom_10 = df_bottom_10.iloc[::-1].reset_index(drop=True)
         
         st.markdown("---")
         col_top, col_bottom = st.columns(2)
+        
         with col_top:
             st.markdown("#### 🏆 Top 10 Contributors (Mais Horas)")
-            fig_top = px.bar(df_top_10, x="Horas", y="Colaborador", orientation='h', color="Horas", color_continuous_scale="Greens")
+            fig_top = px.bar(
+                df_top_10, 
+                x="Horas", 
+                y="Colaborador", 
+                orientation='h', 
+                color="Horas", 
+                color_continuous_scale="Greens"
+            )
             fig_top.update_traces(texttemplate='%{x:.0f}h', textposition='outside')
-            fig_top.update_layout(margin=dict(t=20, b=20, l=150, r=20), height=400, showlegend=False)
+            fig_top.update_layout(
+                margin=dict(t=20, b=20, l=150, r=20), 
+                height=400, 
+                showlegend=False
+            )
             st.plotly_chart(fig_top, width="stretch")
-        
+
         with col_bottom:
             st.markdown("#### ⚠️ Bottom 10 Contributors (Menos Horas)")
-            fig_bottom = px.bar(df_bottom_10, x="Horas", y="Colaborador", orientation='h', color="Horas", color_continuous_scale="Reds")
+            
+            df_bottom_10 = df_bottom_10.copy()
+            max_horas = df_bottom_10["Horas"].max()
+            min_horas = df_bottom_10["Horas"].min()
+            
+            if max_horas > min_horas:
+                df_bottom_10["Cor"] = (max_horas - df_bottom_10["Horas"]) / (max_horas - min_horas)
+            else:
+                df_bottom_10["Cor"] = 1.0
+            
+            fig_bottom = px.bar(
+                df_bottom_10, 
+                x="Horas", 
+                y="Colaborador", 
+                orientation='h', 
+                color="Cor",
+                color_continuous_scale=[
+                    [0.0, '#FFB6C1'],    # Rosa claro (base / mais horas)
+                    [0.25, '#FF6347'],   # Tomate
+                    [0.5, '#FF4500'],    # Laranja-vermelho
+                    [0.75, '#DC143C'],   # Vermelho
+                    [1.0, '#8B0000']     # Vermelho escuro (topo / 0 horas)
+                ],
+                range_color=[0, 1]
+            )
             fig_bottom.update_traces(texttemplate='%{x:.0f}h', textposition='outside')
-            fig_bottom.update_layout(margin=dict(t=20, b=20, l=150, r=20), height=400, showlegend=False)
+            fig_bottom.update_layout(
+                margin=dict(t=20, b=20, l=150, r=20), 
+                height=400, 
+                showlegend=False,
+                coloraxis_colorbar=dict(
+                    title="Horas",
+                    tickvals=[0.0, 0.25, 0.5, 0.75, 1.0],
+                    ticktext=[
+                        f'{max_horas:.0f}h',
+                        f'{min_horas + (max_horas - min_horas) * 0.75:.0f}h',
+                        f'{min_horas + (max_horas - min_horas) * 0.50:.0f}h',
+                        f'{min_horas + (max_horas - min_horas) * 0.25:.0f}h',
+                        f'{min_horas:.0f}h'
+                    ]
+                )
+            )
             st.plotly_chart(fig_bottom, width="stretch")
     else:
         st.info("Sem dados de contribuição")
-
     # -------------------------------------------------------------------------
     # SECÇÃO 5: RESUMO EXECUTIVO DO PERÍODO
     # -------------------------------------------------------------------------
