@@ -1024,7 +1024,7 @@ def render_colaborador_tab(all_workitems_colab, project_of_item, df_colaboradore
         st.warning("⚠️ Nenhuma tarefa com State=Done encontrada.")
         return
     df_tarefas = pd.DataFrame(tarefas_list)
-    filtro = st.sidebar.multiselect("👥 Filtrar por Colaborador", options=sorted(df_tarefas["Colaborador"].unique()), default=sorted(df_tarefas["Colaborador"].unique()), key="filtro_colab_tab")
+    filtro = st.sidebar.multiselect("👥 Filtrar por Colaborador Tarefas", options=sorted(df_tarefas["Colaborador"].unique()), default=sorted(df_tarefas["Colaborador"].unique()), key="filtro_colab_tab")
     if filtro: df_tarefas = df_tarefas[df_tarefas["Colaborador"].isin(filtro)]
     df_sumario = df_tarefas.groupby("Colaborador").agg({"Horas Apontadas": "sum", "ID": "count"}).reset_index()
     df_sumario.columns = ["Colaborador", "Total Horas", "Qtd Tarefas"]
@@ -1097,7 +1097,7 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
             "Diferença": round(diferenca, 2)
         })
     df_consolidado = pd.DataFrame(lista_consolidada).sort_values("Colaborador", ascending=True)
-    filtro = st.sidebar.multiselect("👥 Filtrar por Colaborador", options=sorted(df_consolidado["Colaborador"].unique()), default=sorted(df_consolidado["Colaborador"].unique()), key="filtro_horas")
+    filtro = st.sidebar.multiselect("👥 Filtrar por Colaborador Horas", options=sorted(df_consolidado["Colaborador"].unique()), default=sorted(df_consolidado["Colaborador"].unique()), key="filtro_horas")
     if filtro: df_consolidado = df_consolidado[df_consolidado["Colaborador"].isin(filtro)]
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("🕐 Total Ponto", f"{df_consolidado['Ponto'].sum():.2f} h")
