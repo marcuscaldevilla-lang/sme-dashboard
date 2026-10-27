@@ -947,6 +947,7 @@ def render_table_html(parents_data, children_map, all_workitems, total_hours):
     .dt { font-size: 11px; color: #666; } .sprint-path { font-size: 11px; color: #444; word-break: break-word; }
     </style>
     """
+    
     rows = []
     for p in parents_data:
         f = p.get("fields", {})
@@ -960,38 +961,75 @@ def render_table_html(parents_data, children_map, all_workitems, total_hours):
         child_ids = children_map.get(pid, [])
         children = [all_workitems[cid] for cid in child_ids if cid in all_workitems]
         state_class = state_to_css_class(pstate)
-        parent_row = f"""<tr><td colspan="10" style="padding:0;border:none;">
-<details><summary><table class="parent-tbl"><tr>
-<td style="width:3%"></td><td style="width:22%" class="sprint-path"><strong>{sprint_path}</strong></td>
-<td style="width:6%;color:#FF6600;font-weight:700;">#{pid}</td><td style="width:25%" title="{title}">{title[:50]}{'...' if len(title)>50 else ''}</td>
-<td style="width:10%">{ptype}</td><td style="width:10%"><span class="badge b-{state_class}">{pstate}</span></td>
-<td style="width:7%;font-weight:600;color:#2c5282;">{hours}</td>
-<td style="width:6%"><a href="{link}" target="_blank" class="lnk" onclick="event.stopPropagation()">Abrir</a></td>
-<td style="width:6%" class="dt">{created}</td><td style="width:6%" class="dt">{closed}</td>
-</tr></table></summary>"""
+        
+        parent_row = (
+            '<tr><td colspan="10" style="padding:0;border:none;">'
+            '<details><summary><table class="parent-tbl"><tr>'
+            '<td style="width:3%"></td>'
+            f'<td style="width:22%" class="sprint-path"><strong>{sprint_path}</strong></td>'
+            f'<td style="width:6%;color:#FF6600;font-weight:700;">#{pid}</td>'
+            f'<td style="width:25%" title="{title}">{title[:50]}{"..." if len(title)>50 else ""}</td>'
+            f'<td style="width:10%">{ptype}</td>'
+            f'<td style="width:10%"><span class="badge b-{state_class}">{pstate}</span></td>'
+            f'<td style="width:7%;font-weight:600;color:#2c5282;">{hours}</td>'
+            f'<td style="width:6%"><a href="{link}" target="_blank" class="lnk" onclick="event.stopPropagation()">Abrir</a></td>'
+            f'<td style="width:6%" class="dt">{created}</td>'
+            f'<td style="width:6%" class="dt">{closed}</td>'
+            '</tr></table></summary>'
+        )
+        
         if children:
-            parent_row += '<div style="padding:0 0 0 30px;"><table class="child-tbl"><thead><tr><th style="width:3%"></th><th style="width:22%">Sprint</th><th style="width:6%">ID</th><th style="width:25%">Título</th><th style="width:10%">Tipo</th><th style="width:10%">Situação</th><th style="width:7%">Horas</th><th style="width:6%">Link</th><th style="width:6%">Dt Criação</th><th style="width:6%">Dt Término</th></tr></thead><tbody>'
+            parent_row += '<div style="padding:0 0 0 30px;"><table class="child-tbl"><thead><tr>'
+            parent_row += '<th style="width:3%"></th><th style="width:22%">Sprint</th><th style="width:6%">ID</th>'
+            parent_row += '<th style="width:25%">Título</th><th style="width:10%">Tipo</th><th style="width:10%">Situação</th>'
+            parent_row += '<th style="width:7%">Horas</th><th style="width:6%">Link</th>'
+            parent_row += '<th style="width:6%">Dt Criação</th><th style="width:6%">Dt Término</th>'
+            parent_row += '</tr></thead><tbody>'
+            
             for c in children:
                 cf = c.get("fields", {})
                 cstate = esc(cf.get("System.State", ""))
-                parent_row += f"""<tr><td></td><td class="sprint-path">{sprint_path}</td><td style="color:#666;">#{c['id']}</td>
-                <td>{esc(cf.get('System.Title',''))}</td><td>{esc(cf.get('System.WorkItemType',''))}</td>
-                <td><span class="badge b-{state_to_css_class(cstate)}">{cstate}</span></td>
-                <td>{format_hours(cf.get('Microsoft.VSTS.Scheduling.OriginalEstimate'))}</td><td>-</td>
-                <td class="dt">{format_date(cf.get('System.CreatedDate'))}</td><td class="dt">{format_date(cf.get('Microsoft.VSTS.Common.ClosedDate'))}</td></tr>"""
-            parent_row += "</tbody></table></div>"
+                parent_row += '<tr>'
+                parent_row += '<td></td>'
+                parent_row += f'<td class="sprint-path">{sprint_path}</td>'
+                parent_row += f'<td style="color:#666;">#{c["id"]}</td>'
+                parent_row += f'<td>{esc(cf.get("System.Title", ""))}</td>'
+                parent_row += f'<td>{esc(cf.get("System.WorkItemType", ""))}</td>'
+                parent_row += f'<td><span class="badge b-{state_to_css_class(cstate)}">{cstate}</span></td>'
+                parent_row += f'<td>{format_hours(cf.get("Microsoft.VSTS.Scheduling.OriginalEstimate"))}</td>'
+                parent_row += '<td>-</td>'
+                parent_row += f'<td class="dt">{format_date(cf.get("System.CreatedDate"))}</td>'
+                parent_row += f'<td class="dt">{format_date(cf.get("Microsoft.VSTS.Common.ClosedDate"))}</td>'
+                parent_row += '</tr>'
+            
+            parent_row += '</tbody></table></div>'
         else:
             parent_row += '<div style="padding:10px 0 10px 30px;color:#888;font-style:italic;font-size:12px;">Nenhuma atividade filha vinculada.</div>'
-        parent_row += "</details></td></tr>"
+        
+        parent_row += '</details></td></tr>'
         rows.append(parent_row)
-    full_html = css + f"""<table class="ado-tbl"><thead><tr>
-<th style="width:3%"></th><th style="width:22%">Sprint</th><th style="width:6%">ID</th><th style="width:25%">Título</th>
-<th style="width:10%">Tipo</th><th style="width:10%">Situação</th><th style="width:7%">Horas</th><th style="width:6%">Link</th>
-<th style="width:6%">Dt Criação</th><th style="width:6%">Dt Término</th></tr></thead><tbody>
-""" + "\n".join(rows) + f"""
-<tr class="ftr"><td colspan="6" style="text-align:right;">TOTAL ACUMULADO DE HORAS PREVISTAS:</td>
-<td style="color:#FF6600;font-size:16px;">{total_hours:.2f} h</td><td colspan="3"></td></tr></tbody></table>"""
-    st.markdown(full_html, unsafe_allow_html=True)
+    
+    # Monta o HTML final como string contínua
+    header_html = (
+        '<table class="ado-tbl"><thead><tr>'
+        '<th style="width:3%"></th><th style="width:22%">Sprint</th><th style="width:6%">ID</th>'
+        '<th style="width:25%">Título</th><th style="width:10%">Tipo</th><th style="width:10%">Situação</th>'
+        '<th style="width:7%">Horas</th><th style="width:6%">Link</th>'
+        '<th style="width:6%">Dt Criação</th><th style="width:6%">Dt Término</th>'
+        '</tr></thead><tbody>'
+    )
+    
+    footer_html = (
+        '<tr class="ftr"><td colspan="6" style="text-align:right;">TOTAL ACUMULADO DE HORAS PREVISTAS:</td>'
+        f'<td style="color:#FF6600;font-size:16px;">{total_hours:.2f} h</td>'
+        '<td colspan="3"></td></tr></tbody></table>'
+    )
+    
+    full_html = css + header_html + ''.join(rows) + footer_html
+    
+    # Usa st.components.v1.html para garantir renderização correta
+    import streamlit.components.v1 as components
+    components.html(full_html, height=max(400, len(rows) * 100 + 200), scrolling=True)
 
 # =============================================================================
 # RENDERIZAÇÃO - ABAS
