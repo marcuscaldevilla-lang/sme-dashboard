@@ -68,14 +68,24 @@ def inject_custom_css():
 # =============================================================================
 # COMPONENTE AUXILIAR: MULTISELECT COM MARCAR/DESMARCAR TODOS (NA SIDEBAR)
 # =============================================================================
+# =============================================================================
+# COMPONENTE AUXILIAR: MULTISELECT COM MARCAR/DESMARCAR TODOS (NA SIDEBAR)
+# =============================================================================
 def multiselect_with_toggle(label: str, options: list, default: list, key: str):
     """
     Renderiza um multiselect na sidebar com botões 'Todos' e 'Nenhum'.
-    Versão simplificada para evitar travamentos.
+    Corrige o erro StreamlitDefaultNotInOptionsError filtrando valores inválidos.
     """
+    # Garante que options seja uma lista
+    if not options:
+        options = []
+    
     # Inicializa o estado se não existir
     if key not in st.session_state:
-        st.session_state[key] = list(default) if default else []
+        st.session_state[key] = [d for d in default if d in options] if default else []
+    else:
+        # ✅ CORREÇÃO CRÍTICA: Filtra valores do session_state que não estão mais em options
+        st.session_state[key] = [v for v in st.session_state[key] if v in options]
     
     # Renderiza na SIDEBAR
     st.sidebar.markdown(f"**{label}**")
@@ -93,7 +103,7 @@ def multiselect_with_toggle(label: str, options: list, default: list, key: str):
             st.session_state[key] = []
             st.rerun()
     
-    # Multiselect
+    # Multiselect - usa o session_state já filtrado como default
     selected = st.sidebar.multiselect(
         label,
         options=options,
