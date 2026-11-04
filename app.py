@@ -1182,24 +1182,51 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
     if st.session_state.get('filtro_horas_periodo') != periodo_atual:
         st.session_state.filtro_horas_periodo = periodo_atual
         if 'filtro_horas' in st.session_state: del st.session_state.filtro_horas
+    
     colaborador_nivel = {}
     for _, row in df_colaboradores.iterrows():
         ponto_name = str(row["colaborador_ponto"]).strip()
         nivel = str(row.get("nivel", "")).strip()
         if ponto_name: colaborador_nivel[ponto_name] = nivel
+    
     nivel_capacity = get_all_capacities()
-    horas_azure = {}
+    
+    # ✅ CORREÇÃO: Normalizar azure_to_ponto da mesma forma que encontrar_colaborador_ponto
     azure_to_ponto = {}
     for _, row in df_colaboradores.iterrows():
         azure_name = str(row["colaborador_azure"]).strip().lower()
+        # ✅ Remover email se existir (igual faz em encontrar_colaborador_ponto)
+        if "<" in azure_name:
+            azure_name = azure_name.split("<")[0].strip()
         ponto_name = str(row["colaborador_ponto"]).strip()
-        if azure_name: azure_to_ponto[azure_name] = ponto_name
+        if azure_name: 
+            azure_to_ponto[azure_name] = ponto_name
+    
+    logger.info(f"📊 azure_to_ponto construído com {len(azure_to_ponto)} colaboradores")
+    
+    # ✅ Calcular horas Azure com filtro de sprint
+    horas_azure = {}
     for item_id, item in all_workitems_colab.items():
         f = item.get("fields", {})
-        if f.get("System.State") != "Done": continue
+        if f.get("System.State") != "Done": 
+            continue
+        
+        # Aplicar filtro de sprint selecionada
+        if valid_paths and f.get("System.IterationPath", "") not in valid_paths:
+            continue
+        
         assigned_name = get_assigned_to_name(f.get("System.AssignedTo"))
         colaborador_ponto = encontrar_colaborador_ponto(assigned_name, azure_to_ponto)
-        horas_azure[colaborador_ponto] = horas_azure.get(colaborador_ponto, 0) + float(f.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0)
+        
+        if colaborador_ponto != "Não atribuído":
+            horas_azure[colaborador_ponto] = horas_azure.get(colaborador_ponto, 0) + float(f.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0)
+    
+    logger.info(f"📊 Horas Azure calculadas para {len(horas_azure)} colaboradores")
+    for nome, horas in sorted(horas_azure.items()):
+        if 'Anderson' in nome:
+            logger.info(f"  - {nome}: {horas}h")
+    
+    # ✅ Montar lista com TODOS os colaboradores do ponto
     lista_consolidada = []
     for _, hp_row in df_horasponto.iterrows():
         ponto_name = str(hp_row["colaborador_ponto"]).strip()
@@ -1220,20 +1247,12 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
             "Capacity": capacity_calculado,
             "Diferença": round(diferenca, 2)
         })
+    
     df_consolidado = pd.DataFrame(lista_consolidada).sort_values("Colaborador", ascending=True)
-    if valid_paths:
-        colaboradores_com_trabalho = set()
-        for item_id, item in all_workitems_colab.items():
-            f = item.get("fields", {})
-            if f.get("System.IterationPath", "") in valid_paths:
-                assigned_name = get_assigned_to_name(f.get("System.AssignedTo"))
-                colaborador_ponto = encontrar_colaborador_ponto(assigned_name, azure_to_ponto)
-                if colaborador_ponto != "Não atribuído":
-                    colaboradores_com_trabalho.add(colaborador_ponto)
-        if colaboradores_com_trabalho:
-            df_consolidado = df_consolidado[df_consolidado["Colaborador"].isin(colaboradores_com_trabalho)]
+    
     filtro = multiselect_with_toggle("👥 Filtrar por Colaborador (Horas)", sorted(df_consolidado["Colaborador"].unique()), sorted(df_consolidado["Colaborador"].unique()), "filtro_horas")
     if filtro: df_consolidado = df_consolidado[df_consolidado["Colaborador"].isin(filtro)]
+    
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("🕐 Total Ponto", f"{df_consolidado['Ponto'].sum():.2f} h")
     col2.metric("💻 Total Azure", f"{df_consolidado['Azure'].sum():.2f} h")
@@ -1244,14 +1263,17 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
     col6.metric("⚖️ Diferença Total", f"{diff_total:+.2f} h",
                 delta=f"{diff_total:+.2f}h",
                 delta_color="normal" if abs(diff_total) < 10 else ("inverse" if diff_total < 0 else "normal"))
+    
     st.markdown("---")
     st.subheader("🕐 Horas por Colaborador")
     st.info(f"Período: **{month_name}/{year}** | Horas úteis: **{horas_uteis_mensais:.2f}h**")
+    
     def colorir_diferenca(val):
         if pd.isna(val): return ''
         if val > 0: return 'background-color: #d4edda; color: #155724'
         elif val < 0: return 'background-color: #f8d7da; color: #721c24'
         else: return 'background-color: #fff3cd; color: #856404'
+    
     styler = df_consolidado.style.map(colorir_diferenca, subset=['Diferença'])
     st.dataframe(
         styler,
@@ -1267,12 +1289,14 @@ def render_horas_colaborador_tab(df_colaboradores, df_horasponto, horas_uteis_me
             "Diferença": st.column_config.NumberColumn("Diferença (h)", format="%+.2f h", help="Positivo = excesso no Azure | Negativo = falta no Azure")
         }
     )
+    
     st.markdown("---")
     st.subheader("📈 Comparativo: Ponto vs Azure vs Capacity")
     df_grafico = df_consolidado.melt(id_vars=["Colaborador"], value_vars=["Ponto", "Azure", "Capacity"], var_name="Fonte", value_name="Horas")
     fig = px.bar(df_grafico, x="Colaborador", y="Horas", color="Fonte", barmode="group", color_discrete_map={"Ponto": "#28a745", "Azure": "#0078d4", "Capacity": "#FF6600"})
     fig.update_layout(margin=dict(t=20, b=80, l=20, r=20), height=450, xaxis_tickangle=-45)
     st.plotly_chart(fig, width="stretch")
+    
     st.markdown("---")
     st.subheader("⚖️ Diferença entre Azure e Capacity por Colaborador")
     st.info("🟢 **Verde**: Horas excedentes no Azure | 🔴 **Vermelho**: Horas faltantes no Azure")
