@@ -370,14 +370,8 @@ def inserir_horasponto_lote(registros: List[Dict]) -> Tuple[int, int, List[str]]
                 if tem_folga:
                     valores.append(r.get('folga', 0.0))
                 dados_insert.append(tuple(valores))
-                if i < 3:
-                    logger.info(f"✅ Registro {i}: {valores}")
             execute_values(cur, query, dados_insert)
             conn.commit()
-            if tem_folga:
-                cur.execute('SELECT COUNT(*), AVG("Folga") FROM horasponto WHERE ano_base = %s AND mes_base = %s', (registros[0]['ano'], registros[0]['mes']))
-                resultado = cur.fetchone()
-                logger.info(f"🔍 Verificação: {resultado[0]} registros, média de Folga: {resultado[1]}")
         conn.close()
         st.cache_data.clear()
         return len(dados_insert), 0, []
@@ -497,7 +491,7 @@ def deletar_usuario(usuario_id: int, tipo_usuario_logado: str) -> Tuple[bool, st
         return False, f"Erro ao deletar: {str(e)}"
 
 # =============================================================================
-# CRUD DE COLABORADORES
+# CRUD DE COLABORADORES (COM NOVOS CAMPOS)
 # =============================================================================
 @st.cache_data(ttl=120, show_spinner=False)
 def listar_colaboradores() -> pd.DataFrame:
@@ -507,9 +501,14 @@ def listar_colaboradores() -> pd.DataFrame:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, colaborador_azure, colaborador_ponto, cargo, nivel,
-                data_inicio, email, promocao, reposicao, data_saida, status
-                FROM colaboradores ORDER BY colaborador_ponto
+                SELECT c.id, c.colaborador_azure, c.colaborador_ponto, c.cargo, c.nivel,
+                       c.data_inicio, c.email, c.promocao, c.reposicao, c.data_saida, c.status,
+                       c.gestor, c.email_pessoal, c.cpf, c.telefone, c.local,
+                       c.linkedin, c.github, c.os, c.dt_nascimento, c.dia_aniv, c.mes_aniv, c.tecnologia,
+                       u.nome AS nome_gestor
+                FROM colaboradores c
+                LEFT JOIN usuarios u ON c.gestor = u.id
+                ORDER BY c.colaborador_ponto
             """)
             rows = cur.fetchall()
         conn.close()
@@ -517,6 +516,22 @@ def listar_colaboradores() -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Erro ao listar colaboradores: {e}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def listar_gestores() -> List[Dict]:
+    """Busca usuários do tipo Gestor para popular o combo de gestores."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return []
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, nome, email FROM usuarios WHERE tipo = 'Gestor' AND status = 'Ativo' ORDER BY nome")
+            gestores = cur.fetchall()
+        conn.close()
+        return gestores
+    except Exception as e:
+        logger.error(f"Erro ao buscar gestores: {e}")
+        return []
 
 def criar_colaborador(dados: Dict) -> Tuple[bool, str]:
     db_url = os.getenv("NEON_DATABASE_URL")
@@ -531,8 +546,10 @@ def criar_colaborador(dados: Dict) -> Tuple[bool, str]:
                 return False, "Já existe um colaborador cadastrado com este nome."
             cur.execute("""
                 INSERT INTO colaboradores
-                (colaborador_azure, colaborador_ponto, cargo, nivel, data_inicio, email, promocao, reposicao, data_saida, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'Ativo')
+                (colaborador_azure, colaborador_ponto, cargo, nivel, data_inicio, email, promocao, reposicao, data_saida, status,
+                 gestor, email_pessoal, cpf, telefone, local, linkedin, github, os, dt_nascimento, dia_aniv, mes_aniv, tecnologia)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'Ativo',
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 dados.get('colaborador_azure', '').strip(),
                 dados.get('colaborador_ponto', '').strip(),
@@ -542,7 +559,19 @@ def criar_colaborador(dados: Dict) -> Tuple[bool, str]:
                 dados.get('email', '').strip(),
                 dados.get('promocao') if dados.get('promocao') else None,
                 dados.get('reposicao', '').strip(),
-                dados.get('data_saida') if dados.get('data_saida') else None
+                dados.get('data_saida') if dados.get('data_saida') else None,
+                int(dados['gestor']) if dados.get('gestor') else None,
+                dados.get('email_pessoal', '').strip(),
+                dados.get('cpf', '').strip(),
+                dados.get('telefone', '').strip(),
+                dados.get('local', '').strip(),
+                dados.get('linkedin', '').strip(),
+                dados.get('github', '').strip(),
+                dados.get('os', '').strip(),
+                dados.get('dt_nascimento') if dados.get('dt_nascimento') else None,
+                int(dados['dia_aniv']) if dados.get('dia_aniv') else None,
+                int(dados['mes_aniv']) if dados.get('mes_aniv') else None,
+                dados.get('tecnologia', '').strip()
             ))
             conn.commit()
         conn.close()
@@ -562,7 +591,9 @@ def atualizar_colaborador(colaborador_id: int, dados: Dict) -> Tuple[bool, str]:
             cur.execute("""
                 UPDATE colaboradores SET
                 colaborador_azure = %s, colaborador_ponto = %s, cargo = %s, nivel = %s,
-                data_inicio = %s, email = %s, promocao = %s, reposicao = %s, data_saida = %s, status = %s
+                data_inicio = %s, email = %s, promocao = %s, reposicao = %s, data_saida = %s, status = %s,
+                gestor = %s, email_pessoal = %s, cpf = %s, telefone = %s, local = %s,
+                linkedin = %s, github = %s, os = %s, dt_nascimento = %s, dia_aniv = %s, mes_aniv = %s, tecnologia = %s
                 WHERE id = %s
             """, (
                 dados.get('colaborador_azure', '').strip(),
@@ -575,6 +606,18 @@ def atualizar_colaborador(colaborador_id: int, dados: Dict) -> Tuple[bool, str]:
                 dados.get('reposicao', '').strip(),
                 dados.get('data_saida') if dados.get('data_saida') else None,
                 dados.get('status', 'Ativo'),
+                int(dados['gestor']) if dados.get('gestor') else None,
+                dados.get('email_pessoal', '').strip(),
+                dados.get('cpf', '').strip(),
+                dados.get('telefone', '').strip(),
+                dados.get('local', '').strip(),
+                dados.get('linkedin', '').strip(),
+                dados.get('github', '').strip(),
+                dados.get('os', '').strip(),
+                dados.get('dt_nascimento') if dados.get('dt_nascimento') else None,
+                int(dados['dia_aniv']) if dados.get('dia_aniv') else None,
+                int(dados['mes_aniv']) if dados.get('mes_aniv') else None,
+                dados.get('tecnologia', '').strip(),
                 colaborador_id
             ))
             conn.commit()
@@ -600,6 +643,234 @@ def deletar_colaborador(colaborador_id: int) -> Tuple[bool, str]:
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         return False, f"Erro ao deletar: {str(e)}"
+
+def render_colaboradores_tab():
+    tipo_usuario = st.session_state.user_info.get('cargo', 'User')
+    if tipo_usuario not in ['Admin', 'Gestor']:
+        st.error("🚫 Acesso negado. Apenas Administradores e Gestores podem acessar esta funcionalidade.")
+        st.stop()
+    
+    st.subheader("⚙️ Gerenciamento de Colaboradores")
+    
+    if 'colaborador_editando' not in st.session_state: st.session_state.colaborador_editando = None
+    if 'mostrar_form_colaborador' not in st.session_state: st.session_state.mostrar_form_colaborador = False
+    if 'mostrar_confirmacao_exclusao' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao = None
+    
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn2:
+        if st.button("➕ Novo Colaborador", width="stretch", type="primary"):
+            st.session_state.colaborador_editando = None
+            st.session_state.mostrar_form_colaborador = True
+            st.rerun()
+    
+    df_colaboradores = listar_colaboradores()
+    
+    if df_colaboradores.empty:
+        st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
+    else:
+        st.markdown(f"**Total de colaboradores cadastrados:** {len(df_colaboradores)}")
+        
+        # Grid com todos os campos
+        colunas_grid = [
+            'id', 'colaborador_ponto', 'cargo', 'nivel', 'nome_gestor',
+            'email', 'email_pessoal', 'cpf', 'telefone', 'local',
+            'linkedin', 'github', 'os', 'tecnologia',
+            'data_inicio', 'dt_nascimento', 'dia_aniv', 'mes_aniv',
+            'promocao', 'reposicao', 'data_saida', 'status'
+        ]
+        colunas_exibicao = [c for c in colunas_grid if c in df_colaboradores.columns]
+        
+        st.dataframe(
+            df_colaboradores[colunas_exibicao],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "colaborador_ponto": st.column_config.TextColumn("Nome", width="large"),
+                "cargo": st.column_config.TextColumn("Cargo"),
+                "nivel": st.column_config.TextColumn("Nível"),
+                "nome_gestor": st.column_config.TextColumn("Gestor"),
+                "email": st.column_config.TextColumn("E-mail Corp."),
+                "email_pessoal": st.column_config.TextColumn("E-mail Pessoal"),
+                "cpf": st.column_config.TextColumn("CPF"),
+                "telefone": st.column_config.TextColumn("Telefone"),
+                "local": st.column_config.TextColumn("Local"),
+                "linkedin": st.column_config.LinkColumn("LinkedIn"),
+                "github": st.column_config.LinkColumn("GitHub"),
+                "os": st.column_config.TextColumn("OS"),
+                "tecnologia": st.column_config.TextColumn("Tecnologia"),
+                "data_inicio": st.column_config.DateColumn("Data Início"),
+                "dt_nascimento": st.column_config.DateColumn("Nascimento"),
+                "dia_aniv": st.column_config.NumberColumn("Dia Aniv."),
+                "mes_aniv": st.column_config.NumberColumn("Mês Aniv."),
+                "promocao": st.column_config.DateColumn("Promoção"),
+                "reposicao": st.column_config.TextColumn("Reposição"),
+                "data_saida": st.column_config.DateColumn("Data Saída"),
+                "status": st.column_config.TextColumn("Status")
+            }
+        )
+        
+        st.markdown("---")
+        st.markdown("### Ações")
+        colaborador_selecionado = st.selectbox(
+            "Selecione um colaborador para editar ou excluir:",
+            options=[f"{row['id']} - {row['colaborador_ponto']} ({row['cargo']})" for _, row in df_colaboradores.iterrows()],
+            index=0
+        )
+        if colaborador_selecionado:
+            colaborador_id = int(colaborador_selecionado.split(" - ")[0])
+            colaborador_dados = df_colaboradores[df_colaboradores['id'] == colaborador_id].iloc[0].to_dict()
+            col_edit, col_del = st.columns(2)
+            with col_edit:
+                if st.button("✏️ Editar Colaborador", width="stretch"):
+                    st.session_state.colaborador_editando = colaborador_dados
+                    st.session_state.mostrar_form_colaborador = True
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary"):
+                    st.session_state.mostrar_confirmacao_exclusao = colaborador_id
+                    st.rerun()
+    
+    # Confirmação de exclusão
+    if st.session_state.get('mostrar_confirmacao_exclusao'):
+        col_id = st.session_state.mostrar_confirmacao_exclusao
+        col_nome = df_colaboradores[df_colaboradores['id'] == col_id]['colaborador_ponto'].values[0]
+        st.warning(f"⚠️ Você está prestes a excluir o colaborador: **{col_nome}**")
+        st.info("Esta ação não pode ser desfeita!")
+        col_sim, col_nao = st.columns(2)
+        with col_sim:
+            if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                sucesso, msg = deletar_colaborador(col_id)
+                if sucesso:
+                    st.success(f"✅ {msg}")
+                    st.session_state.mostrar_confirmacao_exclusao = None
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+        with col_nao:
+            if st.button("❌ Não, Cancelar", width="stretch"):
+                st.session_state.mostrar_confirmacao_exclusao = None
+                st.rerun()
+    
+    # Formulário de criação/edição
+    if st.session_state.get('mostrar_form_colaborador'):
+        st.markdown("---")
+        st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
+        colaborador = st.session_state.colaborador_editando or {}
+        
+        # Buscar lista de gestores
+        gestores = listar_gestores()
+        gestores_options = {g['id']: g['nome'] for g in gestores}
+        gestores_options[0] = "-- Sem gestor --"
+        
+        with st.form("form_colaborador"):
+            # Seção 1: Dados Pessoais
+            st.markdown("#### 👤 Dados Pessoais")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                colaborador_ponto = st.text_input("Nome no Ponto *", value=colaborador.get('colaborador_ponto', ''))
+                cpf = st.text_input("CPF", value=str(colaborador.get('cpf', '') or ''))
+                dt_nascimento = st.date_input("Data de Nascimento", value=colaborador.get('dt_nascimento') if colaborador.get('dt_nascimento') else None, format="DD/MM/YYYY")
+            with col2:
+                colaborador_azure = st.text_input("Nome no Azure DevOps *", value=colaborador.get('colaborador_azure', ''))
+                email_pessoal = st.text_input("E-mail Pessoal", value=colaborador.get('email_pessoal', ''))
+                telefone = st.text_input("Telefone", value=colaborador.get('telefone', ''))
+            with col3:
+                email = st.text_input("E-mail Corporativo", value=colaborador.get('email', ''))
+                local = st.text_input("Local", value=colaborador.get('local', ''))
+                os_val = st.text_input("Sistema Operacional", value=colaborador.get('os', ''))
+            
+            # Seção 2: Dados Profissionais
+            st.markdown("#### 💼 Dados Profissionais")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                cargo = st.text_input("Cargo *", value=colaborador.get('cargo', ''))
+                nivel = st.selectbox("Nível *", options=["", "Senior", "Pleno", "Junior", "Portfólio"], 
+                                    index=["", "Senior", "Pleno", "Junior", "Portfólio"].index(colaborador.get('nivel', '')) if colaborador.get('nivel', '') in ["", "Senior", "Pleno", "Junior", "Portfólio"] else 0)
+                tecnologia = st.text_input("Tecnologia Principal", value=colaborador.get('tecnologia', ''))
+            with col2:
+                data_inicio = st.date_input("Data de Início *", value=colaborador.get('data_inicio') if colaborador.get('data_inicio') else None, format="DD/MM/YYYY")
+                data_saida = st.date_input("Data de Saída", value=colaborador.get('data_saida') if colaborador.get('data_saida') else None, format="DD/MM/YYYY")
+                promocao = st.date_input("Data da Promoção", value=colaborador.get('promocao') if colaborador.get('promocao') else None, format="DD/MM/YYYY")
+            with col3:
+                reposicao = st.text_input("Novo Colaborador (Reposição)", value=colaborador.get('reposicao', ''))
+                status = st.selectbox("Status", options=["Ativo", "Inativo", "Bloqueado"], 
+                                     index=["Ativo", "Inativo", "Bloqueado"].index(colaborador.get('status', 'Ativo')) if colaborador.get('status', 'Ativo') in ["Ativo", "Inativo", "Bloqueado"] else 0)
+                gestor_id = colaborador.get('gestor')
+                gestor_index = 0
+                if gestor_id and int(gestor_id) in gestores_options:
+                    gestor_index = list(gestores_options.keys()).index(int(gestor_id))
+                gestor_selecionado = st.selectbox("Gestor", options=list(gestores_options.values()), index=gestor_index)
+                # Mapear nome de volta para ID
+                gestor_id_selecionado = [k for k, v in gestores_options.items() if v == gestor_selecionado][0]
+            
+            # Seção 3: Links e Aniversário
+            st.markdown("#### 🔗 Links e Aniversário")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                linkedin = st.text_input("LinkedIn", value=colaborador.get('linkedin', ''))
+            with col2:
+                github = st.text_input("GitHub", value=colaborador.get('github', ''))
+            with col3:
+                dia_aniv = st.number_input("Dia do Aniversário", min_value=1, max_value=31, value=int(colaborador.get('dia_aniv') or 1))
+                mes_aniv = st.number_input("Mês do Aniversário", min_value=1, max_value=12, value=int(colaborador.get('mes_aniv') or 1))
+            
+            st.markdown("---")
+            col_submit, col_cancel = st.columns(2)
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            
+            if cancelled:
+                st.session_state.colaborador_editando = None
+                st.session_state.mostrar_form_colaborador = False
+                st.rerun()
+            
+            if submitted:
+                erros = []
+                if not colaborador_azure.strip(): erros.append("Nome no Azure DevOps é obrigatório")
+                if not colaborador_ponto.strip(): erros.append("Nome no Ponto é obrigatório")
+                if not cargo.strip(): erros.append("Cargo é obrigatório")
+                if not nivel: erros.append("Nível é obrigatório")
+                if not data_inicio: erros.append("Data de Início é obrigatória")
+                
+                if erros:
+                    for erro in erros: st.error(f"⚠️ {erro}")
+                else:
+                    dados = {
+                        'colaborador_azure': colaborador_azure,
+                        'colaborador_ponto': colaborador_ponto,
+                        'cargo': cargo,
+                        'nivel': nivel,
+                        'data_inicio': data_inicio if data_inicio else None,
+                        'email': email,
+                        'promocao': promocao if promocao else None,
+                        'reposicao': reposicao,
+                        'data_saida': data_saida if data_saida else None,
+                        'status': status,
+                        'gestor': gestor_id_selecionado,
+                        'email_pessoal': email_pessoal,
+                        'cpf': cpf,
+                        'telefone': telefone,
+                        'local': local,
+                        'linkedin': linkedin,
+                        'github': github,
+                        'os': os_val,
+                        'dt_nascimento': dt_nascimento if dt_nascimento else None,
+                        'dia_aniv': dia_aniv,
+                        'mes_aniv': mes_aniv,
+                        'tecnologia': tecnologia
+                    }
+                    if st.session_state.colaborador_editando:
+                        sucesso, msg = atualizar_colaborador(st.session_state.colaborador_editando['id'], dados)
+                    else:
+                        sucesso, msg = criar_colaborador(dados)
+                    if sucesso:
+                        st.success(f"✅ {msg}")
+                        st.session_state.colaborador_editando = None
+                        st.session_state.mostrar_form_colaborador = False
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
 
 # =============================================================================
 # CRUD DE PROJETOS
@@ -1521,16 +1792,12 @@ def render_metricas_tab(all_workitems, project_of_item, df_colaboradores, df_hor
     st.info(f"Período: **{month_name}/{year}** | Dias úteis: **{dias_uteis_reais:.0f}** ({dias_uteis:.0f}h)")
     if is_auditor:
         st.info("👁️ **Modo Auditor:** Apenas métricas específicas de acompanhamento estão disponíveis.")
-    
-    # ✅ Buscar total_faturado diretamente da tabela faturamento_mensal
     faturamento_existente = verificar_faturamento_existente(year, month_num)
     total_faturado_banco = float(faturamento_existente['total_faturado']) if faturamento_existente else None
-    
     if total_faturado_banco is not None:
         logger.info(f"💰 Total Faturado (banco): R$ {total_faturado_banco:,.2f}")
     else:
         logger.warning(f"⚠️ Nenhum faturamento calculado para {month_name}/{year}")
-    
     all_capacities = get_all_capacities()
     nivel_valor = {str(r["nivel"]).strip(): limpar_valor_monetario(r.get("valor")) for _, r in df_valores.iterrows() if str(r.get("nivel", "")).strip()}
     df_colab_periodo = df_colaboradores.copy()
@@ -1767,97 +2034,6 @@ def render_metricas_tab(all_workitems, project_of_item, df_colaboradores, df_hor
             "Status": ["✅" if len(df_colab_periodo) > 0 else "⚠️", "✅" if total_horas_azure > 0 else "⚠️", "✅" if total_horas_ponto > 0 else "⚠️", "✅" if total_capacity_geral > 0 else "⚠️", "✅" if 85 <= utilizacao_geral <= 95 else ("⚠️" if utilizacao_geral > 0 else "❌"), "✅" if abs(gap_geral) < total_horas_ponto * 0.05 else "⚠️", "✅" if capacidade_ociosa_geral < total_capacity_geral * 0.2 else "⚠️", "✅" if total_faturado_exibir > 0 else "⚠️", "✅" if ticket_medio_hora > 0 else "⚠️", "✅" if lead_time_medio > 0 else "⚠️", "✅" if cycle_time_medio > 0 else "⚠️", "✅" if velocidade_media_itens > 0 else "⚠️", "✅" if pct_manutencao < 30 else ("⚠️" if pct_manutencao < 40 else "❌"), "✅" if pct_evolucao > 50 else "⚠️", "✅" if taxa_absenteismo < 10 else ("⚠️" if taxa_absenteismo < 15 else "❌")]
         }
         st.dataframe(pd.DataFrame(resumo_data), width="stretch", hide_index=True, column_config={"Indicador": st.column_config.TextColumn("Indicador", width="large"), "Valor": st.column_config.TextColumn("Valor"), "Fórmula": st.column_config.TextColumn("Fórmula de Cálculo", width="large"), "Status": st.column_config.TextColumn("Status")})
-
-# =============================================================================
-# CRUD COLABORADORES
-# =============================================================================
-def render_colaboradores_tab():
-    tipo_usuario = st.session_state.user_info.get('cargo', 'User')
-    if tipo_usuario not in ['Admin', 'Gestor']:
-        st.error("🚫 Acesso negado. Apenas Administradores e Gestores podem acessar esta funcionalidade.")
-        st.stop()
-    st.subheader("⚙️ Gerenciamento de Colaboradores")
-    if 'colaborador_editando' not in st.session_state: st.session_state.colaborador_editando = None
-    if 'mostrar_form_colaborador' not in st.session_state: st.session_state.mostrar_form_colaborador = False
-    if 'mostrar_confirmacao_exclusao' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao = None
-    col_btn1, col_btn2 = st.columns([3, 1])
-    with col_btn2:
-        if st.button("➕ Novo Colaborador", width="stretch", type="primary"):
-            st.session_state.colaborador_editando = None; st.session_state.mostrar_form_colaborador = True; st.rerun()
-    df_colaboradores = listar_colaboradores()
-    if df_colaboradores.empty:
-        st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
-    else:
-        st.markdown(f"**Total de colaboradores cadastrados:** {len(df_colaboradores)}")
-        df_exibicao = df_colaboradores.copy()
-        for col in ['data_inicio', 'data_saida', 'promocao']:
-            if col in df_exibicao.columns: df_exibicao[col] = df_exibicao[col].apply(lambda x: x.strftime("%d/%m/%Y") if pd.notna(x) else "")
-        colunas_exibicao = [c for c in ['id', 'colaborador_ponto', 'cargo', 'nivel', 'email', 'data_inicio', 'promocao', 'reposicao', 'data_saida', 'status'] if c in df_exibicao.columns]
-        st.dataframe(df_exibicao[colunas_exibicao], width="stretch", hide_index=True,
-            column_config={"id": st.column_config.NumberColumn("ID", width="small"), "colaborador_ponto": st.column_config.TextColumn("Nome", width="large")})
-        st.markdown("---")
-        st.markdown("### Ações")
-        colaborador_selecionado = st.selectbox("Selecione um colaborador para editar ou excluir:", options=[f"{row['id']} - {row['colaborador_ponto']} ({row['cargo']})" for _, row in df_colaboradores.iterrows()], index=0)
-        if colaborador_selecionado:
-            colaborador_id = int(colaborador_selecionado.split(" - ")[0])
-            colaborador_dados = df_colaboradores[df_colaboradores['id'] == colaborador_id].iloc[0].to_dict()
-            col_edit, col_del = st.columns(2)
-            with col_edit:
-                if st.button("✏️ Editar Colaborador", width="stretch"): st.session_state.colaborador_editando = colaborador_dados; st.session_state.mostrar_form_colaborador = True; st.rerun()
-            with col_del:
-                if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary"): st.session_state.mostrar_confirmacao_exclusao = colaborador_id; st.rerun()
-    if st.session_state.get('mostrar_confirmacao_exclusao'):
-        col_id = st.session_state.mostrar_confirmacao_exclusao
-        col_nome = df_colaboradores[df_colaboradores['id'] == col_id]['colaborador_ponto'].values[0]
-        st.warning(f"⚠️ Você está prestes a excluir o colaborador: **{col_nome}**")
-        st.info("Esta ação não pode ser desfeita!")
-        col_sim, col_nao = st.columns(2)
-        with col_sim:
-            if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
-                sucesso, msg = deletar_colaborador(col_id)
-                if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
-                else: st.error(f"❌ {msg}")
-        with col_nao:
-            if st.button("❌ Não, Cancelar", width="stretch"): st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
-    if st.session_state.get('mostrar_form_colaborador'):
-        st.markdown("---")
-        st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
-        colaborador = st.session_state.colaborador_editando or {}
-        with st.form("form_colaborador"):
-            col1, col2 = st.columns(2)
-            with col1:
-                colaborador_azure = st.text_input("Nome no Azure DevOps *", value=colaborador.get('colaborador_azure', ''))
-                colaborador_ponto = st.text_input("Nome no Ponto *", value=colaborador.get('colaborador_ponto', ''))
-                email = st.text_input("E-mail", value=colaborador.get('email', ''))
-                cargo = st.text_input("Cargo *", value=colaborador.get('cargo', ''))
-            with col2:
-                nivel = st.selectbox("Nível *", options=["", "Senior", "Pleno", "Junior", "Portfólio"], index=["", "Senior", "Pleno", "Junior", "Portfólio"].index(colaborador.get('nivel', '')) if colaborador.get('nivel', '') in ["", "Senior", "Pleno", "Junior", "Portfólio"] else 0)
-                status = st.selectbox("Status", options=["Ativo", "Inativo", "Bloqueado"], index=["Ativo", "Inativo", "Bloqueado"].index(colaborador.get('status', 'Ativo')) if colaborador.get('status', 'Ativo') in ["Ativo", "Inativo", "Bloqueado"] else 0)
-                data_inicio = st.date_input("Data de Início *", value=colaborador.get('data_inicio') if colaborador.get('data_inicio') else None, format="DD/MM/YYYY")
-                data_saida = st.date_input("Data de Saída", value=colaborador.get('data_saida') if colaborador.get('data_saida') else None, format="DD/MM/YYYY")
-            col3, col4 = st.columns(2)
-            with col3: promocao = st.date_input("Data da Promoção", value=colaborador.get('promocao') if colaborador.get('promocao') else None, format="DD/MM/YYYY")
-            with col4: reposicao = st.text_input("Novo Colaborador (Reposição)", value=colaborador.get('reposicao', ''))
-            st.markdown("---")
-            col_submit, col_cancel = st.columns(2)
-            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
-            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
-            if cancelled: st.session_state.colaborador_editando = None; st.session_state.mostrar_form_colaborador = False; st.rerun()
-            if submitted:
-                erros = []
-                if not colaborador_azure.strip(): erros.append("Nome no Azure DevOps é obrigatório")
-                if not colaborador_ponto.strip(): erros.append("Nome no Ponto é obrigatório")
-                if not cargo.strip(): erros.append("Cargo é obrigatório")
-                if not nivel: erros.append("Nível é obrigatório")
-                if not data_inicio: erros.append("Data de Início é obrigatória")
-                if erros:
-                    for erro in erros: st.error(f"⚠️ {erro}")
-                else:
-                    dados = {'colaborador_azure': colaborador_azure, 'colaborador_ponto': colaborador_ponto, 'cargo': cargo, 'nivel': nivel, 'data_inicio': data_inicio if data_inicio else None, 'email': email, 'promocao': promocao if promocao else None, 'reposicao': reposicao, 'data_saida': data_saida if data_saida else None, 'status': status}
-                    if st.session_state.colaborador_editando: sucesso, msg = atualizar_colaborador(st.session_state.colaborador_editando['id'], dados)
-                    else: sucesso, msg = criar_colaborador(dados)
-                    if sucesso: st.success(f"✅ {msg}"); st.session_state.colaborador_editando = None; st.session_state.mostrar_form_colaborador = False; st.rerun()
-                    else: st.error(f"❌ {msg}")
 
 # =============================================================================
 # FATURAMENTO
@@ -2243,14 +2419,11 @@ def main():
     st.caption("Azure DevOps • SME-Spassu • Sprint Tracker")
     st.markdown("---")
     st.sidebar.header("⚙️ Configuração & Filtros")
-    
-    # ✅ Botão de Refresh dos Dados
     if st.sidebar.button("🔄 Atualizar Dados", width="stretch", type="primary", help="Recarrega todos os dados do Azure DevOps e banco de dados"):
         st.cache_data.clear()
         st.cache_resource.clear()
         st.session_state.periodo_anterior = None
         st.rerun()
-    
     pat = st.session_state.user_info.get('apikey', '')
     if not pat: st.error("⚠️ API Key do Azure DevOps não cadastrada para este usuário."); st.stop()
     api_valida, msg_erro = validate_ado_api_key(pat)
