@@ -60,6 +60,17 @@ def inject_custom_css():
     .badge-qween { display: inline-block; background: rgba(255, 255, 255, 0.22); backdrop-filter: blur(8px); padding: 6px 16px; border-radius: 30px; font-size: 0.85rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 20px; color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.35); }
     .auth-card { background: rgba(255, 255, 255, 0.12); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 20px; padding: 40px; box-shadow: 0 20px 45px rgba(0, 0, 0, 0.18); color: #ffffff; }
     .token-box { background: rgba(0,0,0,0.4); padding: 15px; border-radius: 8px; font-family: monospace; font-size: 1rem; word-break: break-all; margin: 15px 0; border: 2px solid rgba(255,255,255,0.5); text-align: center; color: #fff; }
+    .destaque-card { background: white; border-radius: 12px; padding: 20px; border: 1px solid #e0e0e0; box-shadow: 0 2px 8px rgba(0,0,0,0.05); min-height: 280px; }
+    .destaque-titulo { font-size: 11px; color: #FF6600; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+    .destaque-subtitulo { font-size: 18px; font-weight: 700; color: #1a1a2e; margin-bottom: 15px; }
+    .destaque-item { padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+    .destaque-item:last-child { border-bottom: none; }
+    .destaque-nome { font-weight: 600; color: #1a1a2e; font-size: 14px; }
+    .destaque-cargo { font-size: 12px; color: #666; }
+    .destaque-data { font-size: 12px; color: #FF6600; font-weight: 600; }
+    .badge-hoje { background: #FF6600; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-amanha { background: #28a745; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-semana { background: #e9ecef; color: #495057; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     """
@@ -644,6 +655,332 @@ def deletar_colaborador(colaborador_id: int) -> Tuple[bool, str]:
         if conn: conn.rollback(); conn.close()
         return False, f"Erro ao deletar: {str(e)}"
 
+# =============================================================================
+# DESTAQUES DA SEMANA
+# =============================================================================
+def render_destaques_semana(df_colaboradores):
+    """Renderiza os destaques da semana: aniversariantes e aniversariantes de casa."""
+    if df_colaboradores.empty:
+        return
+    
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # ✅ Semana de DOMINGO a SÁBADO (calendário brasileiro)
+    dia_semana = hoje.weekday()
+    if dia_semana == 6:
+        dias_para_domingo = 0
+    else:
+        dias_para_domingo = dia_semana + 1
+    
+    inicio_semana = hoje - timedelta(days=dias_para_domingo)
+    fim_semana = inicio_semana + timedelta(days=6)
+    
+    logger.info(f"📅 Semana (domingo a sábado): {inicio_semana.strftime('%d/%m/%Y')} a {fim_semana.strftime('%d/%m/%Y')}")
+    
+    # ✅ ANIVERSARIANTES DA SEMANA
+    aniversariantes_semana = []
+    for _, row in df_colaboradores.iterrows():
+        dia_aniv = row.get('dia_aniv')
+        mes_aniv = row.get('mes_aniv')
+        if pd.notna(dia_aniv) and pd.notna(mes_aniv):
+            dia_aniv = int(dia_aniv)
+            mes_aniv = int(mes_aniv)
+            try:
+                data_aniv_este_ano = datetime(hoje.year, mes_aniv, dia_aniv)
+                data_aniv_prox_ano = datetime(hoje.year + 1, mes_aniv, dia_aniv)
+                
+                if inicio_semana <= data_aniv_este_ano <= fim_semana:
+                    aniversariantes_semana.append({
+                        'nome': row['colaborador_ponto'],
+                        'dia': dia_aniv,
+                        'mes': mes_aniv,
+                        'cargo': row.get('cargo', ''),
+                        'data_aniversario': data_aniv_este_ano
+                    })
+                elif inicio_semana <= data_aniv_prox_ano <= fim_semana and mes_aniv == 1:
+                    aniversariantes_semana.append({
+                        'nome': row['colaborador_ponto'],
+                        'dia': dia_aniv,
+                        'mes': mes_aniv,
+                        'cargo': row.get('cargo', ''),
+                        'data_aniversario': data_aniv_prox_ano
+                    })
+            except:
+                continue
+    
+    aniversariantes_semana.sort(key=lambda x: x['data_aniversario'])
+    
+    # ✅ ANIVERSARIANTES DE CASA DA SEMANA
+    aniversariantes_casa = []
+    for _, row in df_colaboradores.iterrows():
+        data_inicio = row.get('data_inicio')
+        if pd.notna(data_inicio):
+            if isinstance(data_inicio, str):
+                try:
+                    data_inicio = datetime.strptime(data_inicio, "%Y-%m-%d")
+                except:
+                    try:
+                        data_inicio = datetime.strptime(data_inicio, "%d/%m/%Y")
+                    except:
+                        continue
+            elif not isinstance(data_inicio, datetime):
+                continue
+            
+            dia_inicio = data_inicio.day
+            mes_inicio = data_inicio.month
+            ano_inicio = data_inicio.year
+            
+            try:
+                data_casa_este_ano = datetime(hoje.year, mes_inicio, dia_inicio)
+                data_casa_prox_ano = datetime(hoje.year + 1, mes_inicio, dia_inicio)
+                
+                data_valida = None
+                if inicio_semana <= data_casa_este_ano <= fim_semana:
+                    data_valida = data_casa_este_ano
+                elif inicio_semana <= data_casa_prox_ano <= fim_semana and mes_inicio == 1:
+                    data_valida = data_casa_prox_ano
+                
+                if data_valida:
+                    anos_casa = hoje.year - ano_inicio
+                    if data_casa_este_ano > hoje:
+                        anos_casa -= 1
+                    
+                    aniversariantes_casa.append({
+                        'nome': row['colaborador_ponto'],
+                        'dia': dia_inicio,
+                        'mes': mes_inicio,
+                        'cargo': row.get('cargo', ''),
+                        'anos_casa': anos_casa,
+                        'data_aniversario': data_valida
+                    })
+            except Exception as e:
+                logger.error(f"Erro ao processar data_inicio de {row.get('colaborador_ponto')}: {e}")
+                continue
+    
+    aniversariantes_casa.sort(key=lambda x: x['data_aniversario'])
+    
+    # ✅ RENDERIZAR - HTML em linha única (sem quebras de linha)
+    st.markdown("### 🌟 Destaques da Semana")
+    col_aniv, col_casa = st.columns(2)
+    
+    with col_aniv:
+        html_aniv = '<div class="destaque-card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;"><span style="font-size:24px;">🎂</span><div><div class="destaque-titulo">Aniversários</div><div class="destaque-subtitulo">Aniversariantes da semana</div></div></div>'
+        
+        if not aniversariantes_semana:
+            html_aniv += '<p style="color:#666;font-size:14px;">Nenhum aniversariante nesta semana.</p>'
+        else:
+            for aniv in aniversariantes_semana:
+                dias_restantes = (aniv['data_aniversario'] - hoje).days
+                if dias_restantes == 0:
+                    badge = '<span class="badge-hoje">HOJE!</span>'
+                elif dias_restantes < 0:
+                    badge = f'<span class="badge-semana">Há {abs(dias_restantes)} dia(s)</span>'
+                elif dias_restantes == 1:
+                    badge = '<span class="badge-amanha">Amanhã</span>'
+                else:
+                    badge = f'<span class="badge-semana">Em {dias_restantes} dias</span>'
+                
+                data_formatada = aniv['data_aniversario'].strftime("%d/%m")
+                html_aniv += f'<div class="destaque-item"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div class="destaque-nome">🎉 {aniv["nome"]}</div><div class="destaque-cargo">{aniv["cargo"]}</div></div><div style="text-align:right;">{badge}<div class="destaque-data">{data_formatada}</div></div></div></div>'
+        
+        html_aniv += '</div>'
+        st.markdown(html_aniv, unsafe_allow_html=True)
+    
+    with col_casa:
+        html_casa = '<div class="destaque-card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;"><span style="font-size:24px;">🏢</span><div><div class="destaque-titulo">Tempo de Casa</div><div class="destaque-subtitulo">Aniversariantes de casa da semana</div></div></div>'
+        
+        if not aniversariantes_casa:
+            html_casa += '<p style="color:#666;font-size:14px;">Nenhum aniversário de casa nesta semana.</p>'
+        else:
+            for casa in aniversariantes_casa:
+                dias_restantes = (casa['data_aniversario'] - hoje).days
+                if dias_restantes == 0:
+                    badge = '<span class="badge-hoje">HOJE!</span>'
+                elif dias_restantes < 0:
+                    badge = f'<span class="badge-semana">Há {abs(dias_restantes)} dia(s)</span>'
+                elif dias_restantes == 1:
+                    badge = '<span class="badge-amanha">Amanhã</span>'
+                else:
+                    badge = f'<span class="badge-semana">Em {dias_restantes} dias</span>'
+                
+                data_formatada = casa['data_aniversario'].strftime("%d/%m")
+                html_casa += f'<div class="destaque-item"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div class="destaque-nome">🏆 {casa["nome"]}</div><div class="destaque-cargo">{casa["cargo"]} • <strong>{casa["anos_casa"]} ano(s)</strong></div></div><div style="text-align:right;">{badge}<div class="destaque-data">{data_formatada}</div></div></div></div>'
+        
+        html_casa += '</div>'
+        st.markdown(html_casa, unsafe_allow_html=True)
+    
+    st.markdown("---")
+
+# =============================================================================from datetime import datetime, timedelta
+import pandas as pd
+import streamlit as st
+
+from datetime import datetime, timedelta
+import pandas as pd
+import streamlit as st
+
+def render_destaques_semana(df_colaboradores):
+    """Renderiza os destaques da semana: aniversariantes e aniversariantes de casa (Apenas Ativos)."""
+    if df_colaboradores.empty:
+        return
+    
+    # ✅ Filtra exclusivamente colaboradores com status 'Ativo'
+    df_ativos = df_colaboradores.copy()
+    if 'status' in df_ativos.columns:
+        df_ativos = df_ativos[df_ativos['status'].astype(str).str.strip().str.lower() == 'ativo']
+    
+    if df_ativos.empty:
+        return
+
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Semana de DOMINGO a SÁBADO (calendário brasileiro)
+    dia_semana = hoje.weekday()
+    dias_para_domingo = 0 if dia_semana == 6 else dia_semana + 1
+    
+    inicio_semana = hoje - timedelta(days=dias_para_domingo)
+    fim_semana = inicio_semana + timedelta(days=6)
+    
+    # ---------------------------------------------------------
+    # 1. ANIVERSARIANTES DE VIDA DA SEMANA (Apenas Ativos)
+    # ---------------------------------------------------------
+    aniversariantes_semana = []
+    for _, row in df_ativos.iterrows():
+        dia_aniv = row.get('dia_aniv')
+        mes_aniv = row.get('mes_aniv')
+        if pd.notna(dia_aniv) and pd.notna(mes_aniv):
+            try:
+                dia_aniv = int(dia_aniv)
+                mes_aniv = int(mes_aniv)
+                data_aniv_este_ano = datetime(hoje.year, mes_aniv, dia_aniv)
+                data_aniv_prox_ano = datetime(hoje.year + 1, mes_aniv, dia_aniv)
+                
+                data_valida = None
+                if inicio_semana <= data_aniv_este_ano <= fim_semana:
+                    data_valida = data_aniv_este_ano
+                elif inicio_semana <= data_aniv_prox_ano <= fim_semana and mes_aniv == 1:
+                    data_valida = data_aniv_prox_ano
+                
+                if data_valida:
+                    aniversariantes_semana.append({
+                        'nome': row.get('colaborador_ponto', ''),
+                        'dia': dia_aniv,
+                        'mes': mes_aniv,
+                        'cargo': row.get('cargo', ''),
+                        'data_aniversario': data_valida
+                    })
+            except Exception:
+                continue
+    
+    aniversariantes_semana.sort(key=lambda x: x['data_aniversario'])
+    
+    # ---------------------------------------------------------
+    # 2. ANIVERSARIANTES DE CASA DA SEMANA (Apenas Ativos)
+    # ---------------------------------------------------------
+    aniversariantes_casa = []
+    for _, row in df_ativos.iterrows():
+        raw_data_inicio = row.get('data_inicio')
+        if pd.isna(raw_data_inicio):
+            continue
+        
+        try:
+            data_inicio = pd.to_datetime(raw_data_inicio, dayfirst=True).to_pydatetime()
+            data_inicio = data_inicio.replace(hour=0, minute=0, second=0, microsecond=0)
+        except Exception:
+            continue
+        
+        dia_inicio = data_inicio.day
+        mes_inicio = data_inicio.month
+        ano_inicio = data_inicio.year
+        
+        try:
+            data_casa_este_ano = datetime(hoje.year, mes_inicio, dia_inicio)
+            data_casa_prox_ano = datetime(hoje.year + 1, mes_inicio, dia_inicio)
+            
+            data_valida = None
+            ano_referencia = hoje.year
+            
+            if inicio_semana <= data_casa_este_ano <= fim_semana:
+                data_valida = data_casa_este_ano
+                ano_referencia = hoje.year
+            elif inicio_semana <= data_casa_prox_ano <= fim_semana and mes_inicio == 1:
+                data_valida = data_casa_prox_ano
+                ano_referencia = hoje.year + 1
+            
+            if data_valida:
+                anos_casa = ano_referencia - ano_inicio
+                
+                # Apenas quem está completando 1 ano ou mais de empresa
+                if anos_casa >= 1:
+                    aniversariantes_casa.append({
+                        'nome': row.get('colaborador_ponto', ''),
+                        'dia': dia_inicio,
+                        'mes': mes_inicio,
+                        'cargo': row.get('cargo', ''),
+                        'anos_casa': anos_casa,
+                        'data_aniversario': data_valida
+                    })
+        except Exception:
+            continue
+    
+    aniversariantes_casa.sort(key=lambda x: x['data_aniversario'])
+    
+    # ---------------------------------------------------------
+    # 3. RENDERIZAÇÃO NO STREAMLIT
+    # ---------------------------------------------------------
+    st.markdown("### 🌟 Destaques da Semana")
+    col_aniv, col_casa = st.columns(2)
+    
+    with col_aniv:
+        html_aniv = '<div class="destaque-card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;"><span style="font-size:24px;">🎂</span><div><div class="destaque-titulo">Aniversários</div><div class="destaque-subtitulo">Aniversariantes da semana</div></div></div>'
+        
+        if not aniversariantes_semana:
+            html_aniv += '<p style="color:#666;font-size:14px;">Nenhum aniversariante nesta semana.</p>'
+        else:
+            for aniv in aniversariantes_semana:
+                dias_restantes = (aniv['data_aniversario'] - hoje).days
+                if dias_restantes == 0:
+                    badge = '<span class="badge-hoje">HOJE!</span>'
+                elif dias_restantes < 0:
+                    badge = f'<span class="badge-semana">Há {abs(dias_restantes)} dia(s)</span>'
+                elif dias_restantes == 1:
+                    badge = '<span class="badge-amanha">Amanhã</span>'
+                else:
+                    badge = f'<span class="badge-semana">Em {dias_restantes} dias</span>'
+                
+                data_formatada = aniv['data_aniversario'].strftime("%d/%m")
+                html_aniv += f'<div class="destaque-item"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div class="destaque-nome">🎉 {aniv["nome"]}</div><div class="destaque-cargo">{aniv["cargo"]}</div></div><div style="text-align:right;">{badge}<div class="destaque-data">{data_formatada}</div></div></div></div>'
+        
+        html_aniv += '</div>'
+        st.markdown(html_aniv, unsafe_allow_html=True)
+    
+    with col_casa:
+        html_casa = '<div class="destaque-card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;"><span style="font-size:24px;">🏢</span><div><div class="destaque-titulo">Tempo de Casa</div><div class="destaque-subtitulo">Aniversariantes de casa da semana</div></div></div>'
+        
+        if not aniversariantes_casa:
+            html_casa += '<p style="color:#666;font-size:14px;">Nenhum aniversário de casa nesta semana.</p>'
+        else:
+            for casa in aniversariantes_casa:
+                dias_restantes = (casa['data_aniversario'] - hoje).days
+                if dias_restantes == 0:
+                    badge = '<span class="badge-hoje">HOJE!</span>'
+                elif dias_restantes < 0:
+                    badge = f'<span class="badge-semana">Há {abs(dias_restantes)} dia(s)</span>'
+                elif dias_restantes == 1:
+                    badge = '<span class="badge-amanha">Amanhã</span>'
+                else:
+                    badge = f'<span class="badge-semana">Em {dias_restantes} dias</span>'
+                
+                data_formatada = casa['data_aniversario'].strftime("%d/%m")
+                html_casa += f'<div class="destaque-item"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div class="destaque-nome">🏆 {casa["nome"]}</div><div class="destaque-cargo">{casa["cargo"]} • <strong>{casa["anos_casa"]} ano(s)</strong></div></div><div style="text-align:right;">{badge}<div class="destaque-data">{data_formatada}</div></div></div></div>'
+        
+        html_casa += '</div>'
+        st.markdown(html_casa, unsafe_allow_html=True)
+    
+    st.markdown("---")
+
+# CRUD COLABORADORES - RENDER
+# =============================================================================
 def render_colaboradores_tab():
     tipo_usuario = st.session_state.user_info.get('cargo', 'User')
     if tipo_usuario not in ['Admin', 'Gestor']:
@@ -665,12 +1002,14 @@ def render_colaboradores_tab():
     
     df_colaboradores = listar_colaboradores()
     
+    # ✅ DESTAQUES DA SEMANA - acima do grid
+    render_destaques_semana(df_colaboradores)
+    
     if df_colaboradores.empty:
         st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
     else:
         st.markdown(f"**Total de colaboradores cadastrados:** {len(df_colaboradores)}")
         
-        # Grid com todos os campos
         colunas_grid = [
             'id', 'colaborador_ponto', 'cargo', 'nivel', 'nome_gestor',
             'email', 'email_pessoal', 'cpf', 'telefone', 'local',
@@ -731,7 +1070,6 @@ def render_colaboradores_tab():
                     st.session_state.mostrar_confirmacao_exclusao = colaborador_id
                     st.rerun()
     
-    # Confirmação de exclusão
     if st.session_state.get('mostrar_confirmacao_exclusao'):
         col_id = st.session_state.mostrar_confirmacao_exclusao
         col_nome = df_colaboradores[df_colaboradores['id'] == col_id]['colaborador_ponto'].values[0]
@@ -752,19 +1090,16 @@ def render_colaboradores_tab():
                 st.session_state.mostrar_confirmacao_exclusao = None
                 st.rerun()
     
-    # Formulário de criação/edição
     if st.session_state.get('mostrar_form_colaborador'):
         st.markdown("---")
         st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
         colaborador = st.session_state.colaborador_editando or {}
         
-        # Buscar lista de gestores
         gestores = listar_gestores()
         gestores_options = {g['id']: g['nome'] for g in gestores}
         gestores_options[0] = "-- Sem gestor --"
         
         with st.form("form_colaborador"):
-            # Seção 1: Dados Pessoais
             st.markdown("#### 👤 Dados Pessoais")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -780,7 +1115,6 @@ def render_colaboradores_tab():
                 local = st.text_input("Local", value=colaborador.get('local', ''))
                 os_val = st.text_input("Sistema Operacional", value=colaborador.get('os', ''))
             
-            # Seção 2: Dados Profissionais
             st.markdown("#### 💼 Dados Profissionais")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -801,10 +1135,8 @@ def render_colaboradores_tab():
                 if gestor_id and int(gestor_id) in gestores_options:
                     gestor_index = list(gestores_options.keys()).index(int(gestor_id))
                 gestor_selecionado = st.selectbox("Gestor", options=list(gestores_options.values()), index=gestor_index)
-                # Mapear nome de volta para ID
                 gestor_id_selecionado = [k for k, v in gestores_options.items() if v == gestor_selecionado][0]
             
-            # Seção 3: Links e Aniversário
             st.markdown("#### 🔗 Links e Aniversário")
             col1, col2, col3 = st.columns(3)
             with col1:
