@@ -80,24 +80,40 @@ def inject_custom_css():
 # COMPONENTE AUXILIAR: MULTISELECT COM MARCAR/DESMARCAR TODOS
 # =============================================================================
 def multiselect_with_toggle(label: str, options: list, default: list, key: str):
+    """Renderiza um multiselect na sidebar com botões 'Todos' e 'Nenhum'."""
     if not options:
         options = []
+    
+    # Inicializa o session_state se não existir
     if key not in st.session_state:
         st.session_state[key] = [d for d in default if d in options] if default else []
     else:
+        # Filtra valores que não estão mais nas options
         st.session_state[key] = [v for v in st.session_state[key] if v in options]
-        if not st.session_state[key] and options:
+        # ✅ CORREÇÃO: Só auto-seleciona se NÃO foi ação explícita do usuário
+        flag_none = f"{key}_none_explicit"
+        if not st.session_state[key] and options and not st.session_state.get(flag_none, False):
             st.session_state[key] = list(options)
+        # Reseta a flag após usar
+        if flag_none in st.session_state:
+            del st.session_state[flag_none]
+    
     st.sidebar.markdown(f"**{label}**")
+    
     col_btn1, col_btn2 = st.sidebar.columns(2)
+    
     with col_btn1:
         if st.sidebar.button("✅ Todos", key=f"{key}_btn_all", use_container_width=True):
             st.session_state[key] = list(options)
             st.rerun()
+    
     with col_btn2:
         if st.sidebar.button("❌ Nenhum", key=f"{key}_btn_none", use_container_width=True):
             st.session_state[key] = []
+            # ✅ Marca que o usuário selecionou "Nenhum" explicitamente
+            st.session_state[f"{key}_none_explicit"] = True
             st.rerun()
+    
     selected = st.sidebar.multiselect(
         label,
         options=options,
@@ -105,8 +121,15 @@ def multiselect_with_toggle(label: str, options: list, default: list, key: str):
         key=key,
         label_visibility="collapsed"
     )
+    
+    # Sincroniza o session_state com o valor atual do multiselect
     if selected != st.session_state[key]:
         st.session_state[key] = selected
+        # Se o usuário mudou manualmente, reseta a flag
+        flag_none = f"{key}_none_explicit"
+        if flag_none in st.session_state:
+            del st.session_state[flag_none]
+    
     return selected
 
 # =============================================================================
@@ -502,7 +525,7 @@ def deletar_usuario(usuario_id: int, tipo_usuario_logado: str) -> Tuple[bool, st
         return False, f"Erro ao deletar: {str(e)}"
 
 # =============================================================================
-# CRUD DE COLABORADORES (COM NOVOS CAMPOS)
+# CRUD DE COLABORADORES
 # =============================================================================
 @st.cache_data(ttl=120, show_spinner=False)
 def listar_colaboradores() -> pd.DataFrame:
@@ -530,7 +553,6 @@ def listar_colaboradores() -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def listar_gestores() -> List[Dict]:
-    """Busca usuários do tipo Gestor para popular o combo de gestores."""
     db_url = os.getenv("NEON_DATABASE_URL")
     if not db_url: return []
     try:
@@ -658,167 +680,6 @@ def deletar_colaborador(colaborador_id: int) -> Tuple[bool, str]:
 # =============================================================================
 # DESTAQUES DA SEMANA
 # =============================================================================
-def render_destaques_semana(df_colaboradores):
-    """Renderiza os destaques da semana: aniversariantes e aniversariantes de casa."""
-    if df_colaboradores.empty:
-        return
-    
-    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # ✅ Semana de DOMINGO a SÁBADO (calendário brasileiro)
-    dia_semana = hoje.weekday()
-    if dia_semana == 6:
-        dias_para_domingo = 0
-    else:
-        dias_para_domingo = dia_semana + 1
-    
-    inicio_semana = hoje - timedelta(days=dias_para_domingo)
-    fim_semana = inicio_semana + timedelta(days=6)
-    
-    logger.info(f"📅 Semana (domingo a sábado): {inicio_semana.strftime('%d/%m/%Y')} a {fim_semana.strftime('%d/%m/%Y')}")
-    
-    # ✅ ANIVERSARIANTES DA SEMANA
-    aniversariantes_semana = []
-    for _, row in df_colaboradores.iterrows():
-        dia_aniv = row.get('dia_aniv')
-        mes_aniv = row.get('mes_aniv')
-        if pd.notna(dia_aniv) and pd.notna(mes_aniv):
-            dia_aniv = int(dia_aniv)
-            mes_aniv = int(mes_aniv)
-            try:
-                data_aniv_este_ano = datetime(hoje.year, mes_aniv, dia_aniv)
-                data_aniv_prox_ano = datetime(hoje.year + 1, mes_aniv, dia_aniv)
-                
-                if inicio_semana <= data_aniv_este_ano <= fim_semana:
-                    aniversariantes_semana.append({
-                        'nome': row['colaborador_ponto'],
-                        'dia': dia_aniv,
-                        'mes': mes_aniv,
-                        'cargo': row.get('cargo', ''),
-                        'data_aniversario': data_aniv_este_ano
-                    })
-                elif inicio_semana <= data_aniv_prox_ano <= fim_semana and mes_aniv == 1:
-                    aniversariantes_semana.append({
-                        'nome': row['colaborador_ponto'],
-                        'dia': dia_aniv,
-                        'mes': mes_aniv,
-                        'cargo': row.get('cargo', ''),
-                        'data_aniversario': data_aniv_prox_ano
-                    })
-            except:
-                continue
-    
-    aniversariantes_semana.sort(key=lambda x: x['data_aniversario'])
-    
-    # ✅ ANIVERSARIANTES DE CASA DA SEMANA
-    aniversariantes_casa = []
-    for _, row in df_colaboradores.iterrows():
-        data_inicio = row.get('data_inicio')
-        if pd.notna(data_inicio):
-            if isinstance(data_inicio, str):
-                try:
-                    data_inicio = datetime.strptime(data_inicio, "%Y-%m-%d")
-                except:
-                    try:
-                        data_inicio = datetime.strptime(data_inicio, "%d/%m/%Y")
-                    except:
-                        continue
-            elif not isinstance(data_inicio, datetime):
-                continue
-            
-            dia_inicio = data_inicio.day
-            mes_inicio = data_inicio.month
-            ano_inicio = data_inicio.year
-            
-            try:
-                data_casa_este_ano = datetime(hoje.year, mes_inicio, dia_inicio)
-                data_casa_prox_ano = datetime(hoje.year + 1, mes_inicio, dia_inicio)
-                
-                data_valida = None
-                if inicio_semana <= data_casa_este_ano <= fim_semana:
-                    data_valida = data_casa_este_ano
-                elif inicio_semana <= data_casa_prox_ano <= fim_semana and mes_inicio == 1:
-                    data_valida = data_casa_prox_ano
-                
-                if data_valida:
-                    anos_casa = hoje.year - ano_inicio
-                    if data_casa_este_ano > hoje:
-                        anos_casa -= 1
-                    
-                    aniversariantes_casa.append({
-                        'nome': row['colaborador_ponto'],
-                        'dia': dia_inicio,
-                        'mes': mes_inicio,
-                        'cargo': row.get('cargo', ''),
-                        'anos_casa': anos_casa,
-                        'data_aniversario': data_valida
-                    })
-            except Exception as e:
-                logger.error(f"Erro ao processar data_inicio de {row.get('colaborador_ponto')}: {e}")
-                continue
-    
-    aniversariantes_casa.sort(key=lambda x: x['data_aniversario'])
-    
-    # ✅ RENDERIZAR - HTML em linha única (sem quebras de linha)
-    st.markdown("### 🌟 Destaques da Semana")
-    col_aniv, col_casa = st.columns(2)
-    
-    with col_aniv:
-        html_aniv = '<div class="destaque-card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;"><span style="font-size:24px;">🎂</span><div><div class="destaque-titulo">Aniversários</div><div class="destaque-subtitulo">Aniversariantes da semana</div></div></div>'
-        
-        if not aniversariantes_semana:
-            html_aniv += '<p style="color:#666;font-size:14px;">Nenhum aniversariante nesta semana.</p>'
-        else:
-            for aniv in aniversariantes_semana:
-                dias_restantes = (aniv['data_aniversario'] - hoje).days
-                if dias_restantes == 0:
-                    badge = '<span class="badge-hoje">HOJE!</span>'
-                elif dias_restantes < 0:
-                    badge = f'<span class="badge-semana">Há {abs(dias_restantes)} dia(s)</span>'
-                elif dias_restantes == 1:
-                    badge = '<span class="badge-amanha">Amanhã</span>'
-                else:
-                    badge = f'<span class="badge-semana">Em {dias_restantes} dias</span>'
-                
-                data_formatada = aniv['data_aniversario'].strftime("%d/%m")
-                html_aniv += f'<div class="destaque-item"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div class="destaque-nome">🎉 {aniv["nome"]}</div><div class="destaque-cargo">{aniv["cargo"]}</div></div><div style="text-align:right;">{badge}<div class="destaque-data">{data_formatada}</div></div></div></div>'
-        
-        html_aniv += '</div>'
-        st.markdown(html_aniv, unsafe_allow_html=True)
-    
-    with col_casa:
-        html_casa = '<div class="destaque-card"><div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;"><span style="font-size:24px;">🏢</span><div><div class="destaque-titulo">Tempo de Casa</div><div class="destaque-subtitulo">Aniversariantes de casa da semana</div></div></div>'
-        
-        if not aniversariantes_casa:
-            html_casa += '<p style="color:#666;font-size:14px;">Nenhum aniversário de casa nesta semana.</p>'
-        else:
-            for casa in aniversariantes_casa:
-                dias_restantes = (casa['data_aniversario'] - hoje).days
-                if dias_restantes == 0:
-                    badge = '<span class="badge-hoje">HOJE!</span>'
-                elif dias_restantes < 0:
-                    badge = f'<span class="badge-semana">Há {abs(dias_restantes)} dia(s)</span>'
-                elif dias_restantes == 1:
-                    badge = '<span class="badge-amanha">Amanhã</span>'
-                else:
-                    badge = f'<span class="badge-semana">Em {dias_restantes} dias</span>'
-                
-                data_formatada = casa['data_aniversario'].strftime("%d/%m")
-                html_casa += f'<div class="destaque-item"><div style="display:flex;justify-content:space-between;align-items:center;"><div><div class="destaque-nome">🏆 {casa["nome"]}</div><div class="destaque-cargo">{casa["cargo"]} • <strong>{casa["anos_casa"]} ano(s)</strong></div></div><div style="text-align:right;">{badge}<div class="destaque-data">{data_formatada}</div></div></div></div>'
-        
-        html_casa += '</div>'
-        st.markdown(html_casa, unsafe_allow_html=True)
-    
-    st.markdown("---")
-
-# =============================================================================from datetime import datetime, timedelta
-import pandas as pd
-import streamlit as st
-
-from datetime import datetime, timedelta
-import pandas as pd
-import streamlit as st
-
 def render_destaques_semana(df_colaboradores):
     """Renderiza os destaques da semana: aniversariantes e aniversariantes de casa (Apenas Ativos)."""
     if df_colaboradores.empty:
@@ -979,230 +840,142 @@ def render_destaques_semana(df_colaboradores):
     
     st.markdown("---")
 
-# CRUD COLABORADORES - RENDER
 # =============================================================================
-def render_colaboradores_tab():
-    tipo_usuario = st.session_state.user_info.get('cargo', 'User')
-    if tipo_usuario not in ['Admin', 'Gestor']:
-        st.error("🚫 Acesso negado. Apenas Administradores e Gestores podem acessar esta funcionalidade.")
-        st.stop()
-    
-    st.subheader("⚙️ Gerenciamento de Colaboradores")
-    
-    if 'colaborador_editando' not in st.session_state: st.session_state.colaborador_editando = None
-    if 'mostrar_form_colaborador' not in st.session_state: st.session_state.mostrar_form_colaborador = False
-    if 'mostrar_confirmacao_exclusao' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao = None
-    
-    col_btn1, col_btn2 = st.columns([3, 1])
-    with col_btn2:
-        if st.button("➕ Novo Colaborador", width="stretch", type="primary"):
-            st.session_state.colaborador_editando = None
-            st.session_state.mostrar_form_colaborador = True
-            st.rerun()
-    
-    df_colaboradores = listar_colaboradores()
-    
-    # ✅ DESTAQUES DA SEMANA - acima do grid
-    render_destaques_semana(df_colaboradores)
-    
-    if df_colaboradores.empty:
-        st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
-    else:
-        st.markdown(f"**Total de colaboradores cadastrados:** {len(df_colaboradores)}")
-        
-        colunas_grid = [
-            'id', 'colaborador_ponto', 'cargo', 'nivel', 'nome_gestor',
-            'email', 'email_pessoal', 'cpf', 'telefone', 'local',
-            'linkedin', 'github', 'os', 'tecnologia',
-            'data_inicio', 'dt_nascimento', 'dia_aniv', 'mes_aniv',
-            'promocao', 'reposicao', 'data_saida', 'status'
-        ]
-        colunas_exibicao = [c for c in colunas_grid if c in df_colaboradores.columns]
-        
-        st.dataframe(
-            df_colaboradores[colunas_exibicao],
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", width="small"),
-                "colaborador_ponto": st.column_config.TextColumn("Nome", width="large"),
-                "cargo": st.column_config.TextColumn("Cargo"),
-                "nivel": st.column_config.TextColumn("Nível"),
-                "nome_gestor": st.column_config.TextColumn("Gestor"),
-                "email": st.column_config.TextColumn("E-mail Corp."),
-                "email_pessoal": st.column_config.TextColumn("E-mail Pessoal"),
-                "cpf": st.column_config.TextColumn("CPF"),
-                "telefone": st.column_config.TextColumn("Telefone"),
-                "local": st.column_config.TextColumn("Local"),
-                "linkedin": st.column_config.LinkColumn("LinkedIn"),
-                "github": st.column_config.LinkColumn("GitHub"),
-                "os": st.column_config.TextColumn("OS"),
-                "tecnologia": st.column_config.TextColumn("Tecnologia"),
-                "data_inicio": st.column_config.DateColumn("Data Início"),
-                "dt_nascimento": st.column_config.DateColumn("Nascimento"),
-                "dia_aniv": st.column_config.NumberColumn("Dia Aniv."),
-                "mes_aniv": st.column_config.NumberColumn("Mês Aniv."),
-                "promocao": st.column_config.DateColumn("Promoção"),
-                "reposicao": st.column_config.TextColumn("Reposição"),
-                "data_saida": st.column_config.DateColumn("Data Saída"),
-                "status": st.column_config.TextColumn("Status")
-            }
-        )
-        
-        st.markdown("---")
-        st.markdown("### Ações")
-        colaborador_selecionado = st.selectbox(
-            "Selecione um colaborador para editar ou excluir:",
-            options=[f"{row['id']} - {row['colaborador_ponto']} ({row['cargo']})" for _, row in df_colaboradores.iterrows()],
-            index=0
-        )
-        if colaborador_selecionado:
-            colaborador_id = int(colaborador_selecionado.split(" - ")[0])
-            colaborador_dados = df_colaboradores[df_colaboradores['id'] == colaborador_id].iloc[0].to_dict()
-            col_edit, col_del = st.columns(2)
-            with col_edit:
-                if st.button("✏️ Editar Colaborador", width="stretch"):
-                    st.session_state.colaborador_editando = colaborador_dados
-                    st.session_state.mostrar_form_colaborador = True
-                    st.rerun()
-            with col_del:
-                if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary"):
-                    st.session_state.mostrar_confirmacao_exclusao = colaborador_id
-                    st.rerun()
-    
-    if st.session_state.get('mostrar_confirmacao_exclusao'):
-        col_id = st.session_state.mostrar_confirmacao_exclusao
-        col_nome = df_colaboradores[df_colaboradores['id'] == col_id]['colaborador_ponto'].values[0]
-        st.warning(f"⚠️ Você está prestes a excluir o colaborador: **{col_nome}**")
-        st.info("Esta ação não pode ser desfeita!")
-        col_sim, col_nao = st.columns(2)
-        with col_sim:
-            if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
-                sucesso, msg = deletar_colaborador(col_id)
-                if sucesso:
-                    st.success(f"✅ {msg}")
-                    st.session_state.mostrar_confirmacao_exclusao = None
-                    st.rerun()
-                else:
-                    st.error(f"❌ {msg}")
-        with col_nao:
-            if st.button("❌ Não, Cancelar", width="stretch"):
-                st.session_state.mostrar_confirmacao_exclusao = None
-                st.rerun()
-    
-    if st.session_state.get('mostrar_form_colaborador'):
-        st.markdown("---")
-        st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
-        colaborador = st.session_state.colaborador_editando or {}
-        
-        gestores = listar_gestores()
-        gestores_options = {g['id']: g['nome'] for g in gestores}
-        gestores_options[0] = "-- Sem gestor --"
-        
-        with st.form("form_colaborador"):
-            st.markdown("#### 👤 Dados Pessoais")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                colaborador_ponto = st.text_input("Nome no Ponto *", value=colaborador.get('colaborador_ponto', ''))
-                cpf = st.text_input("CPF", value=str(colaborador.get('cpf', '') or ''))
-                dt_nascimento = st.date_input("Data de Nascimento", value=colaborador.get('dt_nascimento') if colaborador.get('dt_nascimento') else None, format="DD/MM/YYYY")
-            with col2:
-                colaborador_azure = st.text_input("Nome no Azure DevOps *", value=colaborador.get('colaborador_azure', ''))
-                email_pessoal = st.text_input("E-mail Pessoal", value=colaborador.get('email_pessoal', ''))
-                telefone = st.text_input("Telefone", value=colaborador.get('telefone', ''))
-            with col3:
-                email = st.text_input("E-mail Corporativo", value=colaborador.get('email', ''))
-                local = st.text_input("Local", value=colaborador.get('local', ''))
-                os_val = st.text_input("Sistema Operacional", value=colaborador.get('os', ''))
+# CRUD DE COLAB_PROJETOS
+# =============================================================================
+def listar_colab_projetos() -> pd.DataFrame:
+    """Lista associações colaborador-projeto com nomes (SEM CACHE para dados atualizados)."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT cp.id, cp.id_colab, cp.id_projeto, cp.created_at,
+                       c.colaborador_ponto AS nome_colaborador,
+                       c.cargo,
+                       p.name AS nome_projeto
+                FROM colab_projetos cp
+                LEFT JOIN colaboradores c ON cp.id_colab = c.id
+                LEFT JOIN devops_projects p ON cp.id_projeto = p.id
+                ORDER BY c.colaborador_ponto, p.name
+            """)
+            rows = cur.fetchall()
+        conn.close()
+        return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao listar colab_projetos: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def listar_colaboradores_options() -> List[Dict]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return []
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, colaborador_ponto, cargo FROM colaboradores WHERE status = 'Ativo' ORDER BY colaborador_ponto")
+            rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"Erro ao buscar colaboradores options: {e}")
+        return []
+
+@st.cache_data(ttl=300, show_spinner=False)
+def listar_projetos_options() -> List[Dict]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return []
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, name FROM devops_projects WHERE is_active = TRUE ORDER BY name")
+            rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"Erro ao buscar projetos options: {e}")
+        return []
+
+def criar_colab_projeto(dados: Dict) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM colab_projetos WHERE id_colaborador = %s AND id_projeto = %s AND (data_fim IS NULL OR status = 'Ativo')",
+                (dados.get('id_colaborador'), dados.get('id_projeto'))
+            )
+            if cur.fetchone():
+                conn.close()
+                return False, "Este colaborador já está associado a este projeto."
             
-            st.markdown("#### 💼 Dados Profissionais")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                cargo = st.text_input("Cargo *", value=colaborador.get('cargo', ''))
-                nivel = st.selectbox("Nível *", options=["", "Senior", "Pleno", "Junior", "Portfólio"], 
-                                    index=["", "Senior", "Pleno", "Junior", "Portfólio"].index(colaborador.get('nivel', '')) if colaborador.get('nivel', '') in ["", "Senior", "Pleno", "Junior", "Portfólio"] else 0)
-                tecnologia = st.text_input("Tecnologia Principal", value=colaborador.get('tecnologia', ''))
-            with col2:
-                data_inicio = st.date_input("Data de Início *", value=colaborador.get('data_inicio') if colaborador.get('data_inicio') else None, format="DD/MM/YYYY")
-                data_saida = st.date_input("Data de Saída", value=colaborador.get('data_saida') if colaborador.get('data_saida') else None, format="DD/MM/YYYY")
-                promocao = st.date_input("Data da Promoção", value=colaborador.get('promocao') if colaborador.get('promocao') else None, format="DD/MM/YYYY")
-            with col3:
-                reposicao = st.text_input("Novo Colaborador (Reposição)", value=colaborador.get('reposicao', ''))
-                status = st.selectbox("Status", options=["Ativo", "Inativo", "Bloqueado"], 
-                                     index=["Ativo", "Inativo", "Bloqueado"].index(colaborador.get('status', 'Ativo')) if colaborador.get('status', 'Ativo') in ["Ativo", "Inativo", "Bloqueado"] else 0)
-                gestor_id = colaborador.get('gestor')
-                gestor_index = 0
-                if gestor_id and int(gestor_id) in gestores_options:
-                    gestor_index = list(gestores_options.keys()).index(int(gestor_id))
-                gestor_selecionado = st.selectbox("Gestor", options=list(gestores_options.values()), index=gestor_index)
-                gestor_id_selecionado = [k for k, v in gestores_options.items() if v == gestor_selecionado][0]
-            
-            st.markdown("#### 🔗 Links e Aniversário")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                linkedin = st.text_input("LinkedIn", value=colaborador.get('linkedin', ''))
-            with col2:
-                github = st.text_input("GitHub", value=colaborador.get('github', ''))
-            with col3:
-                dia_aniv = st.number_input("Dia do Aniversário", min_value=1, max_value=31, value=int(colaborador.get('dia_aniv') or 1))
-                mes_aniv = st.number_input("Mês do Aniversário", min_value=1, max_value=12, value=int(colaborador.get('mes_aniv') or 1))
-            
-            st.markdown("---")
-            col_submit, col_cancel = st.columns(2)
-            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
-            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
-            
-            if cancelled:
-                st.session_state.colaborador_editando = None
-                st.session_state.mostrar_form_colaborador = False
-                st.rerun()
-            
-            if submitted:
-                erros = []
-                if not colaborador_azure.strip(): erros.append("Nome no Azure DevOps é obrigatório")
-                if not colaborador_ponto.strip(): erros.append("Nome no Ponto é obrigatório")
-                if not cargo.strip(): erros.append("Cargo é obrigatório")
-                if not nivel: erros.append("Nível é obrigatório")
-                if not data_inicio: erros.append("Data de Início é obrigatória")
-                
-                if erros:
-                    for erro in erros: st.error(f"⚠️ {erro}")
-                else:
-                    dados = {
-                        'colaborador_azure': colaborador_azure,
-                        'colaborador_ponto': colaborador_ponto,
-                        'cargo': cargo,
-                        'nivel': nivel,
-                        'data_inicio': data_inicio if data_inicio else None,
-                        'email': email,
-                        'promocao': promocao if promocao else None,
-                        'reposicao': reposicao,
-                        'data_saida': data_saida if data_saida else None,
-                        'status': status,
-                        'gestor': gestor_id_selecionado,
-                        'email_pessoal': email_pessoal,
-                        'cpf': cpf,
-                        'telefone': telefone,
-                        'local': local,
-                        'linkedin': linkedin,
-                        'github': github,
-                        'os': os_val,
-                        'dt_nascimento': dt_nascimento if dt_nascimento else None,
-                        'dia_aniv': dia_aniv,
-                        'mes_aniv': mes_aniv,
-                        'tecnologia': tecnologia
-                    }
-                    if st.session_state.colaborador_editando:
-                        sucesso, msg = atualizar_colaborador(st.session_state.colaborador_editando['id'], dados)
-                    else:
-                        sucesso, msg = criar_colaborador(dados)
-                    if sucesso:
-                        st.success(f"✅ {msg}")
-                        st.session_state.colaborador_editando = None
-                        st.session_state.mostrar_form_colaborador = False
-                        st.rerun()
-                    else:
-                        st.error(f"❌ {msg}")
+            cur.execute("""
+                INSERT INTO colab_projetos (id_colaborador, id_projeto, data_inicio, data_fim, status)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                int(dados['id_colaborador']),
+                int(dados['id_projeto']),
+                dados.get('data_inicio') if dados.get('data_inicio') else None,
+                dados.get('data_fim') if dados.get('data_fim') else None,
+                dados.get('status', 'Ativo')
+            ))
+            conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True, "Associação criada com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao criar: {str(e)}"
+
+def atualizar_colab_projeto(colab_projeto_id: int, dados: Dict) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE colab_projetos SET
+                id_colaborador = %s,
+                id_projeto = %s,
+                data_inicio = %s,
+                data_fim = %s,
+                status = %s
+                WHERE id = %s
+            """, (
+                int(dados['id_colaborador']),
+                int(dados['id_projeto']),
+                dados.get('data_inicio') if dados.get('data_inicio') else None,
+                dados.get('data_fim') if dados.get('data_fim') else None,
+                dados.get('status', 'Ativo'),
+                colab_projeto_id
+            ))
+            conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True, "Associação atualizada com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao atualizar: {str(e)}"
+
+def deletar_colab_projeto(colab_projeto_id: int) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM colab_projetos WHERE id = %s", (colab_projeto_id,))
+            conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True, "Associação removida com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao deletar: {str(e)}"
 
 # =============================================================================
 # CRUD DE PROJETOS
@@ -2098,6 +1871,409 @@ def render_projetos_tab():
                     else: sucesso, msg = criar_projeto(name, is_active)
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.projeto_editando = None; st.session_state.mostrar_form_projeto = False; st.rerun()
                     else: st.error(f"❌ {msg}")
+
+# =============================================================================
+# CRUD COLABORADORES - RENDER COM SUB-ABAS
+# =============================================================================
+def render_colaboradores_tab():
+    tipo_usuario = st.session_state.user_info.get('cargo', 'User')
+    if tipo_usuario not in ['Admin', 'Gestor']:
+        st.error("🚫 Acesso negado. Apenas Administradores e Gestores podem acessar esta funcionalidade.")
+        st.stop()
+    
+    st.subheader("⚙️ Gerenciamento de Colaboradores")
+    
+    # ✅ Sub-abas: Informações e Projetos
+    sub_tab_info, sub_tab_projetos = st.tabs(["👤 Informações", "🏢 Projetos"])
+    
+    with sub_tab_info:
+        _render_colaboradores_info()
+    
+    with sub_tab_projetos:
+        _render_colab_projetos()
+
+def _render_colaboradores_info():
+    """Renderiza a sub-aba de Informações (grid + CRUD de colaboradores)."""
+    if 'colaborador_editando' not in st.session_state: st.session_state.colaborador_editando = None
+    if 'mostrar_form_colaborador' not in st.session_state: st.session_state.mostrar_form_colaborador = False
+    if 'mostrar_confirmacao_exclusao' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao = None
+    
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn2:
+        if st.button("➕ Novo Colaborador", width="stretch", type="primary"):
+            st.session_state.colaborador_editando = None
+            st.session_state.mostrar_form_colaborador = True
+            st.rerun()
+    
+    df_colaboradores = listar_colaboradores()
+    
+    # ✅ CHAMADA DA FUNÇÃO DE DESTAQUES DA SEMANA
+    render_destaques_semana(df_colaboradores)
+    
+    if df_colaboradores.empty:
+        st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
+    else:
+        st.markdown(f"**Total de colaboradores cadastrados:** {len(df_colaboradores)}")
+        
+        colunas_grid = [
+            'id', 'colaborador_ponto', 'cargo', 'nivel', 'nome_gestor',
+            'email', 'email_pessoal', 'cpf', 'telefone', 'local',
+            'linkedin', 'github', 'os', 'tecnologia',
+            'data_inicio', 'dt_nascimento', 'dia_aniv', 'mes_aniv',
+            'promocao', 'reposicao', 'data_saida', 'status'
+        ]
+        colunas_exibicao = [c for c in colunas_grid if c in df_colaboradores.columns]
+        
+        st.dataframe(
+            df_colaboradores[colunas_exibicao],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "colaborador_ponto": st.column_config.TextColumn("Nome", width="large"),
+                "cargo": st.column_config.TextColumn("Cargo"),
+                "nivel": st.column_config.TextColumn("Nível"),
+                "nome_gestor": st.column_config.TextColumn("Gestor"),
+                "email": st.column_config.TextColumn("E-mail Corp."),
+                "email_pessoal": st.column_config.TextColumn("E-mail Pessoal"),
+                "cpf": st.column_config.TextColumn("CPF"),
+                "telefone": st.column_config.TextColumn("Telefone"),
+                "local": st.column_config.TextColumn("Local"),
+                "linkedin": st.column_config.LinkColumn("LinkedIn"),
+                "github": st.column_config.LinkColumn("GitHub"),
+                "os": st.column_config.TextColumn("OS"),
+                "tecnologia": st.column_config.TextColumn("Tecnologia"),
+                "data_inicio": st.column_config.DateColumn("Data Início"),
+                "dt_nascimento": st.column_config.DateColumn("Nascimento"),
+                "dia_aniv": st.column_config.NumberColumn("Dia Aniv."),
+                "mes_aniv": st.column_config.NumberColumn("Mês Aniv."),
+                "promocao": st.column_config.DateColumn("Promoção"),
+                "reposicao": st.column_config.TextColumn("Reposição"),
+                "data_saida": st.column_config.DateColumn("Data Saída"),
+                "status": st.column_config.TextColumn("Status")
+            }
+        )
+        
+        st.markdown("---")
+        st.markdown("### Ações")
+        colaborador_selecionado = st.selectbox(
+            "Selecione um colaborador para editar ou excluir:",
+            options=[f"{row['id']} - {row['colaborador_ponto']} ({row['cargo']})" for _, row in df_colaboradores.iterrows()],
+            index=0
+        )
+        if colaborador_selecionado:
+            colaborador_id = int(colaborador_selecionado.split(" - ")[0])
+            colaborador_dados = df_colaboradores[df_colaboradores['id'] == colaborador_id].iloc[0].to_dict()
+            col_edit, col_del = st.columns(2)
+            with col_edit:
+                if st.button("✏️ Editar Colaborador", width="stretch"):
+                    st.session_state.colaborador_editando = colaborador_dados
+                    st.session_state.mostrar_form_colaborador = True
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary"):
+                    st.session_state.mostrar_confirmacao_exclusao = colaborador_id
+                    st.rerun()
+    
+    if st.session_state.get('mostrar_confirmacao_exclusao'):
+        col_id = st.session_state.mostrar_confirmacao_exclusao
+        col_nome = df_colaboradores[df_colaboradores['id'] == col_id]['colaborador_ponto'].values[0]
+        st.warning(f"⚠️ Você está prestes a excluir o colaborador: **{col_nome}**")
+        st.info("Esta ação não pode ser desfeita!")
+        col_sim, col_nao = st.columns(2)
+        with col_sim:
+            if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                sucesso, msg = deletar_colaborador(col_id)
+                if sucesso:
+                    st.success(f"✅ {msg}")
+                    st.session_state.mostrar_confirmacao_exclusao = None
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+        with col_nao:
+            if st.button("❌ Não, Cancelar", width="stretch"):
+                st.session_state.mostrar_confirmacao_exclusao = None
+                st.rerun()
+    
+    if st.session_state.get('mostrar_form_colaborador'):
+        st.markdown("---")
+        st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
+        colaborador = st.session_state.colaborador_editando or {}
+        
+        gestores = listar_gestores()
+        gestores_options = {g['id']: g['nome'] for g in gestores}
+        gestores_options[0] = "-- Sem gestor --"
+        
+        with st.form("form_colaborador"):
+            st.markdown("#### 👤 Dados Pessoais")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                colaborador_ponto = st.text_input("Nome no Ponto *", value=colaborador.get('colaborador_ponto', ''))
+                cpf = st.text_input("CPF", value=str(colaborador.get('cpf', '') or ''))
+                dt_nascimento = st.date_input("Data de Nascimento", value=colaborador.get('dt_nascimento') if colaborador.get('dt_nascimento') else None, format="DD/MM/YYYY")
+            with col2:
+                colaborador_azure = st.text_input("Nome no Azure DevOps *", value=colaborador.get('colaborador_azure', ''))
+                email_pessoal = st.text_input("E-mail Pessoal", value=colaborador.get('email_pessoal', ''))
+                telefone = st.text_input("Telefone", value=colaborador.get('telefone', ''))
+            with col3:
+                email = st.text_input("E-mail Corporativo", value=colaborador.get('email', ''))
+                local = st.text_input("Local", value=colaborador.get('local', ''))
+                os_val = st.text_input("Sistema Operacional", value=colaborador.get('os', ''))
+            
+            st.markdown("#### 💼 Dados Profissionais")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                cargo = st.text_input("Cargo *", value=colaborador.get('cargo', ''))
+                nivel = st.selectbox("Nível *", options=["", "Senior", "Pleno", "Junior", "Portfólio"], 
+                                    index=["", "Senior", "Pleno", "Junior", "Portfólio"].index(colaborador.get('nivel', '')) if colaborador.get('nivel', '') in ["", "Senior", "Pleno", "Junior", "Portfólio"] else 0)
+                tecnologia = st.text_input("Tecnologia Principal", value=colaborador.get('tecnologia', ''))
+            with col2:
+                data_inicio = st.date_input("Data de Início *", value=colaborador.get('data_inicio') if colaborador.get('data_inicio') else None, format="DD/MM/YYYY")
+                data_saida = st.date_input("Data de Saída", value=colaborador.get('data_saida') if colaborador.get('data_saida') else None, format="DD/MM/YYYY")
+                promocao = st.date_input("Data da Promoção", value=colaborador.get('promocao') if colaborador.get('promocao') else None, format="DD/MM/YYYY")
+            with col3:
+                reposicao = st.text_input("Novo Colaborador (Reposição)", value=colaborador.get('reposicao', ''))
+                status = st.selectbox("Status", options=["Ativo", "Inativo", "Bloqueado"], 
+                                     index=["Ativo", "Inativo", "Bloqueado"].index(colaborador.get('status', 'Ativo')) if colaborador.get('status', 'Ativo') in ["Ativo", "Inativo", "Bloqueado"] else 0)
+                gestor_id = colaborador.get('gestor')
+                gestor_index = 0
+                if gestor_id and int(gestor_id) in gestores_options:
+                    gestor_index = list(gestores_options.keys()).index(int(gestor_id))
+                gestor_selecionado = st.selectbox("Gestor", options=list(gestores_options.values()), index=gestor_index)
+                gestor_id_selecionado = [k for k, v in gestores_options.items() if v == gestor_selecionado][0]
+            
+            st.markdown("#### 🔗 Links e Aniversário")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                linkedin = st.text_input("LinkedIn", value=colaborador.get('linkedin', ''))
+            with col2:
+                github = st.text_input("GitHub", value=colaborador.get('github', ''))
+            with col3:
+                dia_aniv = st.number_input("Dia do Aniversário", min_value=1, max_value=31, value=int(colaborador.get('dia_aniv') or 1))
+                mes_aniv = st.number_input("Mês do Aniversário", min_value=1, max_value=12, value=int(colaborador.get('mes_aniv') or 1))
+            
+            st.markdown("---")
+            col_submit, col_cancel = st.columns(2)
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            
+            if cancelled:
+                st.session_state.colaborador_editando = None
+                st.session_state.mostrar_form_colaborador = False
+                st.rerun()
+            
+            if submitted:
+                erros = []
+                if not colaborador_azure.strip(): erros.append("Nome no Azure DevOps é obrigatório")
+                if not colaborador_ponto.strip(): erros.append("Nome no Ponto é obrigatório")
+                if not cargo.strip(): erros.append("Cargo é obrigatório")
+                if not nivel: erros.append("Nível é obrigatório")
+                if not data_inicio: erros.append("Data de Início é obrigatória")
+                
+                if erros:
+                    for erro in erros: st.error(f"⚠️ {erro}")
+                else:
+                    dados = {
+                        'colaborador_azure': colaborador_azure,
+                        'colaborador_ponto': colaborador_ponto,
+                        'cargo': cargo,
+                        'nivel': nivel,
+                        'data_inicio': data_inicio if data_inicio else None,
+                        'email': email,
+                        'promocao': promocao if promocao else None,
+                        'reposicao': reposicao,
+                        'data_saida': data_saida if data_saida else None,
+                        'status': status,
+                        'gestor': gestor_id_selecionado,
+                        'email_pessoal': email_pessoal,
+                        'cpf': cpf,
+                        'telefone': telefone,
+                        'local': local,
+                        'linkedin': linkedin,
+                        'github': github,
+                        'os': os_val,
+                        'dt_nascimento': dt_nascimento if dt_nascimento else None,
+                        'dia_aniv': dia_aniv,
+                        'mes_aniv': mes_aniv,
+                        'tecnologia': tecnologia
+                    }
+                    if st.session_state.colaborador_editando:
+                        sucesso, msg = atualizar_colaborador(st.session_state.colaborador_editando['id'], dados)
+                    else:
+                        sucesso, msg = criar_colaborador(dados)
+                    if sucesso:
+                        st.success(f"✅ {msg}")
+                        st.session_state.colaborador_editando = None
+                        st.session_state.mostrar_form_colaborador = False
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+
+def _render_colab_projetos():
+    """Renderiza a sub-aba de Projetos (grid + CRUD de colab_projetos)."""
+    if 'colab_projeto_editando' not in st.session_state: st.session_state.colab_projeto_editando = None
+    if 'mostrar_form_colab_projeto' not in st.session_state: st.session_state.mostrar_form_colab_projeto = False
+    if 'mostrar_confirmacao_exclusao_cp' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_cp = None
+    
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn2:
+        if st.button("➕ Nova Associação", width="stretch", type="primary"):
+            st.session_state.colab_projeto_editando = None
+            st.session_state.mostrar_form_colab_projeto = True
+            st.rerun()
+    
+    df_colab_projetos = listar_colab_projetos()
+    
+    if df_colab_projetos.empty:
+        st.warning("⚠️ Nenhuma associação colaborador-projeto cadastrada. Clique em **➕ Nova Associação** para começar.")
+    else:
+        st.markdown(f"**Total de associações:** {len(df_colab_projetos)}")
+        
+        # Grid apenas com colunas existentes
+        colunas_grid = ['id', 'nome_colaborador', 'cargo', 'nome_projeto', 'created_at']
+        colunas_exibicao = [c for c in colunas_grid if c in df_colab_projetos.columns]
+        
+        st.dataframe(
+            df_colab_projetos[colunas_exibicao],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "nome_colaborador": st.column_config.TextColumn("Colaborador", width="large"),
+                "cargo": st.column_config.TextColumn("Cargo"),
+                "nome_projeto": st.column_config.TextColumn("Projeto", width="large"),
+                "created_at": st.column_config.DatetimeColumn("Criado em", format="DD/MM/YYYY HH:mm")
+            }
+        )
+        
+        st.markdown("---")
+        st.markdown("### Ações")
+        options = [f"{row['id']} - {row['nome_colaborador']} → {row['nome_projeto']}" for _, row in df_colab_projetos.iterrows()]
+        if options:
+            associacao_selecionada = st.selectbox(
+                "Selecione uma associação para editar ou excluir:",
+                options=options,
+                index=0
+            )
+            if associacao_selecionada:
+                cp_id = int(associacao_selecionada.split(" - ")[0])
+                cp_dados = df_colab_projetos[df_colab_projetos['id'] == cp_id].iloc[0].to_dict()
+                col_edit, col_del = st.columns(2)
+                with col_edit:
+                    if st.button("✏️ Editar Associação", width="stretch"):
+                        st.session_state.colab_projeto_editando = cp_dados
+                        st.session_state.mostrar_form_colab_projeto = True
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑️ Excluir Associação", width="stretch", type="secondary"):
+                        st.session_state.mostrar_confirmacao_exclusao_cp = cp_id
+                        st.rerun()
+    
+    # Confirmação de exclusão
+    if st.session_state.get('mostrar_confirmacao_exclusao_cp'):
+        cp_id = st.session_state.mostrar_confirmacao_exclusao_cp
+        cp_row = df_colab_projetos[df_colab_projetos['id'] == cp_id]
+        if not cp_row.empty:
+            cp_nome = f"{cp_row.iloc[0]['nome_colaborador']} → {cp_row.iloc[0]['nome_projeto']}"
+            st.warning(f"⚠️ Você está prestes a excluir a associação: **{cp_nome}**")
+            st.info("Esta ação não pode ser desfeita!")
+            col_sim, col_nao = st.columns(2)
+            with col_sim:
+                if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                    sucesso, msg = deletar_colab_projeto(cp_id)
+                    if sucesso:
+                        st.success(f"✅ {msg}")
+                        st.session_state.mostrar_confirmacao_exclusao_cp = None
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+            with col_nao:
+                if st.button("❌ Não, Cancelar", width="stretch"):
+                    st.session_state.mostrar_confirmacao_exclusao_cp = None
+                    st.rerun()
+    
+    # Formulário de criação/edição
+    if st.session_state.get('mostrar_form_colab_projeto'):
+        st.markdown("---")
+        st.subheader("📝 " + ("Editar Associação" if st.session_state.colab_projeto_editando else "Nova Associação Colaborador-Projeto"))
+        cp_dados = st.session_state.colab_projeto_editando or {}
+        
+        colaboradores_options = listar_colaboradores_options()
+        projetos_options = listar_projetos_options()
+        
+        if not colaboradores_options:
+            st.error("⚠️ Nenhum colaborador ativo cadastrado. Cadastre um colaborador primeiro na aba **Informações**.")
+            return
+        if not projetos_options:
+            st.error("⚠️ Nenhum projeto ativo cadastrado. Cadastre um projeto primeiro na aba **Projetos** do menu principal.")
+            return
+        
+        with st.form("form_colab_projeto"):
+            st.markdown("#### 🔗 Associação")
+            col1, col2 = st.columns(2)
+            with col1:
+                # Combo de Colaborador
+                colab_options_dict = {c['id']: f"{c['colaborador_ponto']} ({c['cargo']})" for c in colaboradores_options}
+                colab_labels = list(colab_options_dict.values())
+                colab_ids = list(colab_options_dict.keys())
+                
+                colab_atual = cp_dados.get('id_colab')
+                colab_index = 0
+                if colab_atual and int(colab_atual) in colab_ids:
+                    colab_index = colab_ids.index(int(colab_atual))
+                
+                colab_selecionado_label = st.selectbox("Colaborador *", options=colab_labels, index=colab_index)
+                colab_selecionado_id = colab_ids[colab_labels.index(colab_selecionado_label)]
+            
+            with col2:
+                # Combo de Projeto
+                proj_options_dict = {p['id']: p['name'] for p in projetos_options}
+                proj_labels = list(proj_options_dict.values())
+                proj_ids = list(proj_options_dict.keys())
+                
+                proj_atual = cp_dados.get('id_projeto')
+                proj_index = 0
+                if proj_atual and int(proj_atual) in proj_ids:
+                    proj_index = proj_ids.index(int(proj_atual))
+                
+                proj_selecionado_label = st.selectbox("Projeto *", options=proj_labels, index=proj_index)
+                proj_selecionado_id = proj_ids[proj_labels.index(proj_selecionado_label)]
+            
+            # ✅ SEM Data de Início, Data de Fim e Status (não existem na tabela)
+            
+            st.markdown("---")
+            col_submit, col_cancel = st.columns(2)
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            
+            if cancelled:
+                st.session_state.colab_projeto_editando = None
+                st.session_state.mostrar_form_colab_projeto = False
+                st.rerun()
+            
+            if submitted:
+                erros = []
+                if not colab_selecionado_id: erros.append("Colaborador é obrigatório")
+                if not proj_selecionado_id: erros.append("Projeto é obrigatório")
+                
+                if erros:
+                    for erro in erros: st.error(f"⚠️ {erro}")
+                else:
+                    dados = {
+                        'id_colab': colab_selecionado_id,
+                        'id_projeto': proj_selecionado_id
+                    }
+                    if st.session_state.colab_projeto_editando:
+                        sucesso, msg = atualizar_colab_projeto(st.session_state.colab_projeto_editando['id'], dados)
+                    else:
+                        sucesso, msg = criar_colab_projeto(dados)
+                    if sucesso:
+                        st.success(f"✅ {msg}")
+                        st.session_state.colab_projeto_editando = None
+                        st.session_state.mostrar_form_colab_projeto = False
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
 
 # =============================================================================
 # MÉTRICAS E INDICADORES ESTRATÉGICOS
