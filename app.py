@@ -31,7 +31,7 @@ DEFAULT_WI_TYPES = [t for t in ALL_WI_TYPES if t not in ["Task", "Débito Técni
 SPASSU_LOGO_URL = "https://raw.githubusercontent.com/marcuscaldevilla-lang/sme-dashboard/main/spassu4.png"
 SME_LOGO_URL = "https://raw.githubusercontent.com/marcuscaldevilla-lang/sme-dashboard/main/sme.png"
 
-# ✅ CORREÇÃO 1: Range de datas com 100 anos
+# ✅ Range de datas com 100 anos
 ANO_ATUAL = datetime.now().year
 MIN_DATA = datetime(ANO_ATUAL - 100, 1, 1).date()
 MAX_DATA = datetime(ANO_ATUAL + 100, 12, 31).date()
@@ -854,6 +854,176 @@ def render_squads_tab():
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.squad_editando = None; st.session_state.mostrar_form_squad = False; st.rerun()
                     else: st.error(f"❌ {msg}")
 
+# =============================================================================
+# CRUD DE COORDENADORIAS
+# =============================================================================
+def listar_coordenadorias() -> pd.DataFrame:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, descricao, ativo FROM coordenadorias ORDER BY descricao")
+            rows = cur.fetchall()
+        conn.close(); return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao listar coordenadorias: {e}"); return pd.DataFrame()
+
+def criar_coordenadoria(descricao: str, ativo: bool = True) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM coordenadorias WHERE descricao = %s", (descricao.strip(),))
+            if cur.fetchone(): conn.close(); return False, "Já existe uma coordenadoria com esta descrição."
+            cur.execute("INSERT INTO coordenadorias (descricao, ativo) VALUES (%s, %s)", (descricao.strip(), ativo))
+            conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Coordenadoria criada com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao criar: {str(e)}"
+
+def atualizar_coordenadoria(coord_id: int, descricao: str, ativo: bool) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM coordenadorias WHERE descricao = %s AND id != %s", (descricao.strip(), coord_id))
+            if cur.fetchone(): conn.close(); return False, "Já existe outra coordenadoria com esta descrição."
+            cur.execute("UPDATE coordenadorias SET descricao = %s, ativo = %s WHERE id = %s", (descricao.strip(), ativo, coord_id))
+            conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Coordenadoria atualizada com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao atualizar: {str(e)}"
+
+def deletar_coordenadoria(coord_id: int) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM coordenadorias WHERE id = %s", (coord_id,)); conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Coordenadoria removida com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao deletar: {str(e)}"
+
+def render_coordenadorias_tab():
+    """Renderiza a sub-aba de Coordenadorias (grid + CRUD)."""
+    if 'coord_editando' not in st.session_state: st.session_state.coord_editando = None
+    if 'mostrar_form_coord' not in st.session_state: st.session_state.mostrar_form_coord = False
+    if 'mostrar_confirmacao_exclusao_coord' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_coord = None
+    
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn2:
+        if st.button("➕ Nova Coordenadoria", width="stretch", type="primary"):
+            st.session_state.coord_editando = None
+            st.session_state.mostrar_form_coord = True
+            st.rerun()
+    
+    df_coords = listar_coordenadorias()
+    
+    if df_coords.empty:
+        st.warning("⚠️ Nenhuma coordenadoria cadastrada. Clique em **➕ Nova Coordenadoria** para começar.")
+    else:
+        st.markdown(f"**Total de coordenadorias cadastradas:** {len(df_coords)}")
+        
+        st.dataframe(
+            df_coords[['id', 'descricao', 'ativo']],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "descricao": st.column_config.TextColumn("Descrição", width="large"),
+                "ativo": st.column_config.CheckboxColumn("Ativo")
+            }
+        )
+        
+        st.markdown("---")
+        st.markdown("### Ações")
+        options = [f"{row['id']} - {row['descricao']} ({'Ativo' if row['ativo'] else 'Inativo'})" for _, row in df_coords.iterrows()]
+        if options:
+            coord_selecionada = st.selectbox("Selecione uma coordenadoria para editar ou excluir:", options=options, index=0)
+            if coord_selecionada:
+                coord_id = int(coord_selecionada.split(" - ")[0])
+                coord_dados = df_coords[df_coords['id'] == coord_id].iloc[0].to_dict()
+                col_edit, col_del = st.columns(2)
+                with col_edit:
+                    if st.button("✏️ Editar Coordenadoria", width="stretch"):
+                        st.session_state.coord_editando = coord_dados
+                        st.session_state.mostrar_form_coord = True
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑️ Excluir Coordenadoria", width="stretch", type="secondary"):
+                        st.session_state.mostrar_confirmacao_exclusao_coord = coord_id
+                        st.rerun()
+    
+    if st.session_state.get('mostrar_confirmacao_exclusao_coord'):
+        coord_id = st.session_state.mostrar_confirmacao_exclusao_coord
+        coord_row = df_coords[df_coords['id'] == coord_id]
+        if not coord_row.empty:
+            coord_nome = coord_row.iloc[0]['descricao']
+            st.warning(f"⚠️ Você está prestes a excluir a coordenadoria: **{coord_nome}**")
+            st.info("Esta ação não pode ser desfeita!")
+            col_sim, col_nao = st.columns(2)
+            with col_sim:
+                if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                    sucesso, msg = deletar_coordenadoria(coord_id)
+                    if sucesso:
+                        st.success(f"✅ {msg}")
+                        st.session_state.mostrar_confirmacao_exclusao_coord = None
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+            with col_nao:
+                if st.button("❌ Não, Cancelar", width="stretch"):
+                    st.session_state.mostrar_confirmacao_exclusao_coord = None
+                    st.rerun()
+    
+    if st.session_state.get('mostrar_form_coord'):
+        st.markdown("---")
+        st.subheader("📝 " + ("Editar Coordenadoria" if st.session_state.coord_editando else "Nova Coordenadoria"))
+        coord = st.session_state.coord_editando or {}
+        
+        with st.form("form_coordenadoria"):
+            descricao = st.text_input("Descrição *", value=coord.get('descricao', ''), placeholder="Ex: Coordenadoria de Tecnologia")
+            ativo = st.checkbox("Ativo", value=coord.get('ativo', True))
+            
+            st.markdown("---")
+            col_submit, col_cancel = st.columns(2)
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            
+            if cancelled:
+                st.session_state.coord_editando = None
+                st.session_state.mostrar_form_coord = False
+                st.rerun()
+            
+            if submitted:
+                if not descricao.strip():
+                    st.error("⚠️ Descrição é obrigatória")
+                else:
+                    if st.session_state.coord_editando:
+                        sucesso, msg = atualizar_coordenadoria(st.session_state.coord_editando['id'], descricao, ativo)
+                    else:
+                        sucesso, msg = criar_coordenadoria(descricao, ativo)
+                    if sucesso:
+                        st.success(f"✅ {msg}")
+                        st.session_state.coord_editando = None
+                        st.session_state.mostrar_form_coord = False
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+
 @st.cache_data(ttl=120, show_spinner=False)
 def listar_projetos() -> pd.DataFrame:
     db_url = os.getenv("NEON_DATABASE_URL")
@@ -1530,15 +1700,20 @@ def render_ponto_tab(year, month_name, month_num, tipo_usuario):
         csv_data = df_horasponto_atualizado.to_csv(index=False, encoding='utf-8')
         st.download_button("⬇️ Baixar CSV do Período", data=csv_data, file_name=f"horasponto_{year}_{month_name}.csv", mime="text/csv", width="stretch")
 
+# =============================================================================
+# ✅ MODIFICADA: Estruturação agora com 3 sub-abas
+# =============================================================================
 def render_estruturacao_tab():
     tipo_usuario = st.session_state.user_info.get('cargo', 'User')
     if tipo_usuario not in ['Admin', 'Gestor']:
         st.error("🚫 Acesso negado. Apenas Administradores e Gestores podem acessar esta funcionalidade.")
         st.stop()
     st.subheader("🏗️ Estruturação")
-    sub_tab_projetos, sub_tab_squads = st.tabs(["🏢 Projetos", "👥 Squads"])
+    # ✅ 3 sub-abas: Projetos, Squads e Coordenadorias
+    sub_tab_projetos, sub_tab_squads, sub_tab_coords = st.tabs(["🏢 Projetos", "👥 Squads", "🏛️ Coordenadorias"])
     with sub_tab_projetos: render_projetos_tab()
     with sub_tab_squads: render_squads_tab()
+    with sub_tab_coords: render_coordenadorias_tab()
 
 def render_projetos_tab():
     if 'projeto_editando' not in st.session_state: st.session_state.projeto_editando = None
@@ -1603,7 +1778,6 @@ def render_projetos_tab():
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.projeto_editando = None; st.session_state.mostrar_form_projeto = False; st.rerun()
                     else: st.error(f"❌ {msg}")
 
-# ✅ CORREÇÃO 3: render_colaboradores_tab agora aceita df_colaboradores como parâmetro
 def render_colaboradores_tab(df_colaboradores_filtrados=None):
     tipo_usuario = st.session_state.user_info.get('cargo', 'User')
     if tipo_usuario not in ['Admin', 'Gestor']:
@@ -1623,7 +1797,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
         if st.button("➕ Novo Colaborador", width="stretch", type="primary"):
             st.session_state.colaborador_editando = None; st.session_state.mostrar_form_colaborador = True; st.rerun()
     
-    # ✅ CORREÇÃO 3: Usa o DataFrame filtrado se passado, senão carrega do banco
     if df_colaboradores_filtrados is not None:
         df_colaboradores = df_colaboradores_filtrados
     else:
@@ -1693,7 +1866,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             with col1:
                 colaborador_ponto = st.text_input("Nome no Ponto *", value=colaborador.get('colaborador_ponto', ''))
                 cpf = st.text_input("CPF", value=str(colaborador.get('cpf', '') or ''))
-                # ✅ CORREÇÃO 1: date_input com range de 100 anos
                 dt_nascimento = st.date_input("Data de Nascimento", value=colaborador.get('dt_nascimento') if colaborador.get('dt_nascimento') else None, min_value=MIN_DATA, max_value=MAX_DATA, format="DD/MM/YYYY")
             with col2:
                 colaborador_azure = st.text_input("Nome no Azure DevOps *", value=colaborador.get('colaborador_azure', ''))
@@ -1710,7 +1882,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                 nivel = st.selectbox("Nível *", options=["", "Senior", "Pleno", "Junior", "Portfólio"], index=["", "Senior", "Pleno", "Junior", "Portfólio"].index(colaborador.get('nivel', '')) if colaborador.get('nivel', '') in ["", "Senior", "Pleno", "Junior", "Portfólio"] else 0)
                 tecnologia = st.text_input("Tecnologia Principal", value=colaborador.get('tecnologia', ''))
             with col2:
-                # ✅ CORREÇÃO 1: date_input com range de 100 anos
                 data_inicio = st.date_input("Data de Início *", value=colaborador.get('data_inicio') if colaborador.get('data_inicio') else None, min_value=MIN_DATA, max_value=MAX_DATA, format="DD/MM/YYYY")
                 data_saida = st.date_input("Data de Saída", value=colaborador.get('data_saida') if colaborador.get('data_saida') else None, min_value=MIN_DATA, max_value=MAX_DATA, format="DD/MM/YYYY")
                 promocao = st.date_input("Data da Promoção", value=colaborador.get('promocao') if colaborador.get('promocao') else None, min_value=MIN_DATA, max_value=MAX_DATA, format="DD/MM/YYYY")
@@ -2323,13 +2494,9 @@ def main():
     if st.sidebar.button("🔄 Atualizar Dados", width="stretch", type="primary", help="Recarrega todos os dados do Azure DevOps e banco de dados"):
         st.cache_data.clear(); st.cache_resource.clear(); st.session_state.periodo_anterior = None; st.rerun()
     
-    # =============================================================================
-    # ✅ CORREÇÃO 2: Filtro de Gestor - apenas nomes (sem IDs visíveis)
-    # =============================================================================
+    # Filtro de Gestor na Sidebar (apenas nomes)
     gestores_lista = listar_gestores_filtro()
-    # Opções são apenas os nomes dos gestores (sem "ID|Nome")
     gestores_nomes = [g['nome'] for g in gestores_lista]
-    # Mapa nome -> id para conversão posterior
     gestor_nome_para_id = {g['nome']: g['id'] for g in gestores_lista}
     
     if 'filtro_gestor' not in st.session_state:
@@ -2344,11 +2511,9 @@ def main():
         help="Selecione um ou mais gestores para filtrar os colaboradores"
     )
     
-    # Sincronizar session_state
     if gestores_selecionados_nomes != st.session_state.filtro_gestor:
         st.session_state.filtro_gestor = gestores_selecionados_nomes
     
-    # Converter nomes selecionados em IDs
     gestores_selecionados_ids = [gestor_nome_para_id[n] for n in gestores_selecionados_nomes if n in gestor_nome_para_id]
     
     pat = st.session_state.user_info.get('apikey', '')
@@ -2409,17 +2574,13 @@ def main():
                 for item_id, item in items.items():
                     all_workitems[item_id] = item; project_of_item[item_id] = proj
     
-    # =============================================================================
-    # ✅ CORREÇÃO 3: Aplicar filtro de gestor em TODOS os dados
-    # =============================================================================
+    # Carregar colaboradores e aplicar filtro de gestor
     df_colaboradores = listar_colaboradores()
     
-    # Aplicar filtro de gestor
     if gestores_selecionados_ids:
         df_colaboradores = df_colaboradores[df_colaboradores['gestor'].isin(gestores_selecionados_ids)].copy()
         st.sidebar.info(f"👔 Filtrando {len(df_colaboradores)} colaborador(es) dos gestores selecionados")
     
-    # Extrair IDs e nomes dos colaboradores filtrados
     colaboradores_filtrados_ids = set(df_colaboradores['id'].tolist()) if not df_colaboradores.empty else set()
     colaboradores_filtrados_azure = set()
     for _, row in df_colaboradores.iterrows():
@@ -2428,7 +2589,6 @@ def main():
         colaboradores_filtrados_azure.add(azure_name)
         colaboradores_filtrados_azure.add(str(row["colaborador_azure"]).strip().lower())
     
-    # Filtrar work items do Azure DevOps pelos colaboradores do gestor
     all_workitems_filtrados = {}
     project_of_item_filtrado = {}
     for item_id, item in all_workitems.items():
@@ -2442,7 +2602,6 @@ def main():
                 all_workitems_filtrados[item_id] = item
                 project_of_item_filtrado[item_id] = project_of_item.get(item_id, "")
     
-    # Filtrar parents_data
     parents_data = []
     valid_paths = set(p for _, p in selected_sprint_paths)
     for item_id, item in all_workitems_filtrados.items():
@@ -2451,7 +2610,6 @@ def main():
             item["_project"] = project_of_item_filtrado.get(item_id, "")
             parents_data.append(item)
     
-    # Filtrar df_horasponto pelos colaboradores do gestor
     df_horasponto = get_horasponto_from_db(year, month_num)
     if not df_horasponto.empty and 'id_colaborador' in df_horasponto.columns:
         df_horasponto = df_horasponto[df_horasponto['id_colaborador'].isin(colaboradores_filtrados_ids)].copy()
@@ -2557,7 +2715,6 @@ def main():
     if tipo_usuario in ['Admin', 'Gestor']:
         with tab_estruturacao: render_estruturacao_tab()
     
-    # ✅ CORREÇÃO 3: Passar df_colaboradores filtrado para a aba Colaboradores
     if tipo_usuario in ['Admin', 'Gestor']:
         with tab_crud_colab: render_colaboradores_tab(df_colaboradores_filtrados=df_colaboradores)
 
