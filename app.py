@@ -2018,6 +2018,9 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
     if 'colaborador_editando' not in st.session_state: st.session_state.colaborador_editando = None
     if 'mostrar_form_colaborador' not in st.session_state: st.session_state.mostrar_form_colaborador = False
     if 'mostrar_confirmacao_exclusao' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao = None
+    if 'filtro_cargo_colab' not in st.session_state: st.session_state.filtro_cargo_colab = []
+    if 'filtro_nivel_colab' not in st.session_state: st.session_state.filtro_nivel_colab = []
+    
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn2:
         if st.button("➕ Novo Colaborador", width="stretch", type="primary", key="btn_novo_colab"):
@@ -2029,49 +2032,100 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
         df_colaboradores = listar_colaboradores()
     
     render_destaques_semana(df_colaboradores)
+    
     if df_colaboradores.empty:
         st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
     else:
-        st.markdown(f"**Total de colaboradores cadastrados:** {len(df_colaboradores)}")
-        colunas_grid = ['id', 'colaborador_ponto', 'cargo', 'nivel', 'nome_gestor', 'email', 'email_pessoal', 'cpf', 'telefone', 'local', 'linkedin', 'github', 'os', 'tecnologia', 'data_inicio', 'dt_nascimento', 'dia_aniv', 'mes_aniv', 'promocao', 'reposicao', 'data_saida', 'status']
-        colunas_exibicao = [c for c in colunas_grid if c in df_colaboradores.columns]
-        st.dataframe(df_colaboradores[colunas_exibicao], width="stretch", hide_index=True,
-            column_config={"id": st.column_config.NumberColumn("ID", width="small"),
-                "colaborador_ponto": st.column_config.TextColumn("Nome", width="large"),
-                "cargo": st.column_config.TextColumn("Cargo"), "nivel": st.column_config.TextColumn("Nível"),
-                "nome_gestor": st.column_config.TextColumn("Gestor"),
-                "email": st.column_config.TextColumn("E-mail Corp."),
-                "email_pessoal": st.column_config.TextColumn("E-mail Pessoal"),
-                "cpf": st.column_config.TextColumn("CPF"),
-                "telefone": st.column_config.TextColumn("Telefone"),
-                "local": st.column_config.TextColumn("Local"),
-                "linkedin": st.column_config.LinkColumn("LinkedIn"),
-                "github": st.column_config.LinkColumn("GitHub"),
-                "os": st.column_config.TextColumn("OS"),
-                "tecnologia": st.column_config.TextColumn("Tecnologia"),
-                "data_inicio": st.column_config.DateColumn("Data Início"),
-                "dt_nascimento": st.column_config.DateColumn("Nascimento"),
-                "dia_aniv": st.column_config.NumberColumn("Dia Aniv."),
-                "mes_aniv": st.column_config.NumberColumn("Mês Aniv."),
-                "promocao": st.column_config.DateColumn("Promoção"),
-                "reposicao": st.column_config.TextColumn("Reposição"),
-                "data_saida": st.column_config.DateColumn("Data Saída"),
-                "status": st.column_config.TextColumn("Status")})
-        st.markdown("---"); st.markdown("### Ações")
-        colaborador_selecionado = st.selectbox("Selecione um colaborador para editar ou excluir:", options=[f"{row['id']} - {row['colaborador_ponto']} ({row['cargo']})" for _, row in df_colaboradores.iterrows()], index=0)
-        if colaborador_selecionado:
-            colaborador_id = int(colaborador_selecionado.split(" - ")[0])
-            colaborador_dados = df_colaboradores[df_colaboradores['id'] == colaborador_id].iloc[0].to_dict()
-            col_edit, col_del = st.columns(2)
-            with col_edit:
-                if st.button("✏️ Editar Colaborador", width="stretch", key="btn_edit_colab"):
-                    st.session_state.colaborador_editando = colaborador_dados; st.session_state.mostrar_form_colaborador = True; st.rerun()
-            with col_del:
-                if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary", key="btn_del_colab"):
-                    st.session_state.mostrar_confirmacao_exclusao = colaborador_id; st.rerun()
+        # =====================================================================
+        # 🔍 FILTROS DE CARGO E NÍVEL
+        # =====================================================================
+        st.markdown("### 🔍 Filtros")
+        
+        # Extrair valores únicos de cargo e nível (ignorando nulos)
+        cargos_unicos = sorted([c for c in df_colaboradores['cargo'].dropna().unique() if str(c).strip()])
+        niveis_unicos = sorted([n for n in df_colaboradores['nivel'].dropna().unique() if str(n).strip()])
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            filtro_cargo = st.multiselect(
+                "Filtrar por Cargo",
+                options=cargos_unicos,
+                default=st.session_state.filtro_cargo_colab,
+                key="multiselect_filt_cargo_colab",
+                placeholder="Todos os cargos"
+            )
+        with col_f2:
+            filtro_nivel = st.multiselect(
+                "Filtrar por Nível",
+                options=niveis_unicos,
+                default=st.session_state.filtro_nivel_colab,
+                key="multiselect_filt_nivel_colab",
+                placeholder="Todos os níveis"
+            )
+        
+        # Sincronizar session_state com filtros
+        if filtro_cargo != st.session_state.filtro_cargo_colab:
+            st.session_state.filtro_cargo_colab = filtro_cargo
+        if filtro_nivel != st.session_state.filtro_nivel_colab:
+            st.session_state.filtro_nivel_colab = filtro_nivel
+        
+        # Aplicar filtros ao DataFrame
+        df_colaboradores_filtrado = df_colaboradores.copy()
+        if filtro_cargo:
+            df_colaboradores_filtrado = df_colaboradores_filtrado[df_colaboradores_filtrado['cargo'].isin(filtro_cargo)]
+        if filtro_nivel:
+            df_colaboradores_filtrado = df_colaboradores_filtrado[df_colaboradores_filtrado['nivel'].isin(filtro_nivel)]
+        
+        # Mostrar contador de resultados
+        if filtro_cargo or filtro_nivel:
+            st.info(f"📊 Exibindo **{len(df_colaboradores_filtrado)}** de **{len(df_colaboradores)}** colaboradores (filtros aplicados)")
+        
+        if df_colaboradores_filtrado.empty:
+            st.warning("⚠️ Nenhum colaborador encontrado com os filtros selecionados.")
+        else:
+            st.markdown(f"**Total de colaboradores cadastrados:** {len(df_colaboradores_filtrado)}")
+            colunas_grid = ['id', 'colaborador_ponto', 'cargo', 'nivel', 'nome_gestor', 'email', 'email_pessoal', 'cpf', 'telefone', 'local', 'linkedin', 'github', 'os', 'tecnologia', 'data_inicio', 'dt_nascimento', 'dia_aniv', 'mes_aniv', 'promocao', 'reposicao', 'data_saida', 'status']
+            colunas_exibicao = [c for c in colunas_grid if c in df_colaboradores_filtrado.columns]
+            st.dataframe(df_colaboradores_filtrado[colunas_exibicao], width="stretch", hide_index=True,
+                column_config={"id": st.column_config.NumberColumn("ID", width="small"),
+                    "colaborador_ponto": st.column_config.TextColumn("Nome", width="large"),
+                    "cargo": st.column_config.TextColumn("Cargo"), "nivel": st.column_config.TextColumn("Nível"),
+                    "nome_gestor": st.column_config.TextColumn("Gestor"),
+                    "email": st.column_config.TextColumn("E-mail Corp."),
+                    "email_pessoal": st.column_config.TextColumn("E-mail Pessoal"),
+                    "cpf": st.column_config.TextColumn("CPF"),
+                    "telefone": st.column_config.TextColumn("Telefone"),
+                    "local": st.column_config.TextColumn("Local"),
+                    "linkedin": st.column_config.LinkColumn("LinkedIn"),
+                    "github": st.column_config.LinkColumn("GitHub"),
+                    "os": st.column_config.TextColumn("OS"),
+                    "tecnologia": st.column_config.TextColumn("Tecnologia"),
+                    "data_inicio": st.column_config.DateColumn("Data Início"),
+                    "dt_nascimento": st.column_config.DateColumn("Nascimento"),
+                    "dia_aniv": st.column_config.NumberColumn("Dia Aniv."),
+                    "mes_aniv": st.column_config.NumberColumn("Mês Aniv."),
+                    "promocao": st.column_config.DateColumn("Promoção"),
+                    "reposicao": st.column_config.TextColumn("Reposição"),
+                    "data_saida": st.column_config.DateColumn("Data Saída"),
+                    "status": st.column_config.TextColumn("Status")})
+            st.markdown("---"); st.markdown("### Ações")
+            colaborador_selecionado = st.selectbox("Selecione um colaborador para editar ou excluir:", options=[f"{row['id']} - {row['colaborador_ponto']} ({row['cargo']})" for _, row in df_colaboradores_filtrado.iterrows()], index=0)
+            if colaborador_selecionado:
+                colaborador_id = int(colaborador_selecionado.split(" - ")[0])
+                colaborador_dados = df_colaboradores_filtrado[df_colaboradores_filtrado['id'] == colaborador_id].iloc[0].to_dict()
+                col_edit, col_del = st.columns(2)
+                with col_edit:
+                    if st.button("✏️ Editar Colaborador", width="stretch", key="btn_edit_colab"):
+                        st.session_state.colaborador_editando = colaborador_dados; st.session_state.mostrar_form_colaborador = True; st.rerun()
+                with col_del:
+                    if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary", key="btn_del_colab"):
+                        st.session_state.mostrar_confirmacao_exclusao = colaborador_id; st.rerun()
+    
     if st.session_state.get('mostrar_confirmacao_exclusao'):
         col_id = st.session_state.mostrar_confirmacao_exclusao
-        col_nome = df_colaboradores[df_colaboradores['id'] == col_id]['colaborador_ponto'].values[0]
+        # Buscar dados completos (sem filtro) para a confirmação
+        df_todos = df_colaboradores_filtrados if df_colaboradores_filtrados is not None else listar_colaboradores()
+        col_nome = df_todos[df_todos['id'] == col_id]['colaborador_ponto'].values[0]
         st.warning(f"⚠️ Você está prestes a excluir o colaborador: **{col_nome}**")
         col_sim, col_nao = st.columns(2)
         with col_sim:
@@ -2081,6 +2135,7 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                 else: st.error(f"❌ {msg}")
         with col_nao:
             if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_colab"): st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
+    
     if st.session_state.get('mostrar_form_colaborador'):
         st.markdown("---"); st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
         colaborador = st.session_state.colaborador_editando or {}
