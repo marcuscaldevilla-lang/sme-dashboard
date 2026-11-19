@@ -31,7 +31,6 @@ DEFAULT_WI_TYPES = [t for t in ALL_WI_TYPES if t not in ["Task", "Débito Técni
 SPASSU_LOGO_URL = "https://raw.githubusercontent.com/marcuscaldevilla-lang/sme-dashboard/main/spassu4.png"
 SME_LOGO_URL = "https://raw.githubusercontent.com/marcuscaldevilla-lang/sme-dashboard/main/sme.png"
 
-# ✅ Range de datas com 100 anos
 ANO_ATUAL = datetime.now().year
 MIN_DATA = datetime(ANO_ATUAL - 100, 1, 1).date()
 MAX_DATA = datetime(ANO_ATUAL + 100, 12, 31).date()
@@ -798,7 +797,7 @@ def render_squads_tab():
     if 'mostrar_confirmacao_exclusao_squad' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_squad = None
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn2:
-        if st.button("➕ Novo Squad", width="stretch", type="primary"):
+        if st.button("➕ Novo Squad", width="stretch", type="primary", key="btn_novo_squad"):
             st.session_state.squad_editando = None; st.session_state.mostrar_form_squad = True; st.rerun()
     df_squads = listar_squads()
     if df_squads.empty:
@@ -816,10 +815,10 @@ def render_squads_tab():
                 squad_dados = df_squads[df_squads['id'] == squad_id].iloc[0].to_dict()
                 col_edit, col_del = st.columns(2)
                 with col_edit:
-                    if st.button("✏️ Editar Squad", width="stretch"):
+                    if st.button("✏️ Editar Squad", width="stretch", key="btn_edit_squad"):
                         st.session_state.squad_editando = squad_dados; st.session_state.mostrar_form_squad = True; st.rerun()
                 with col_del:
-                    if st.button("🗑️ Excluir Squad", width="stretch", type="secondary"):
+                    if st.button("🗑️ Excluir Squad", width="stretch", type="secondary", key="btn_del_squad"):
                         st.session_state.mostrar_confirmacao_exclusao_squad = squad_id; st.rerun()
     if st.session_state.get('mostrar_confirmacao_exclusao_squad'):
         squad_id = st.session_state.mostrar_confirmacao_exclusao_squad
@@ -829,12 +828,12 @@ def render_squads_tab():
             st.warning(f"⚠️ Você está prestes a excluir o squad: **{squad_nome}**")
             col_sim, col_nao = st.columns(2)
             with col_sim:
-                if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_squad"):
                     sucesso, msg = deletar_squad(squad_id)
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_confirmacao_exclusao_squad = None; st.rerun()
                     else: st.error(f"❌ {msg}")
             with col_nao:
-                if st.button("❌ Não, Cancelar", width="stretch"): st.session_state.mostrar_confirmacao_exclusao_squad = None; st.rerun()
+                if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_squad"): st.session_state.mostrar_confirmacao_exclusao_squad = None; st.rerun()
     if st.session_state.get('mostrar_form_squad'):
         st.markdown("---"); st.subheader("📝 " + ("Editar Squad" if st.session_state.squad_editando else "Novo Squad"))
         squad = st.session_state.squad_editando or {}
@@ -843,8 +842,8 @@ def render_squads_tab():
             ativo = st.checkbox("Ativo", value=squad.get('ativo', True))
             st.markdown("---")
             col_submit, col_cancel = st.columns(2)
-            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
-            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary", key="btn_salvar_squad")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch", key="btn_cancelar_squad")
             if cancelled: st.session_state.squad_editando = None; st.session_state.mostrar_form_squad = False; st.rerun()
             if submitted:
                 if not descricao.strip(): st.error("⚠️ Descrição é obrigatória")
@@ -854,9 +853,6 @@ def render_squads_tab():
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.squad_editando = None; st.session_state.mostrar_form_squad = False; st.rerun()
                     else: st.error(f"❌ {msg}")
 
-# =============================================================================
-# CRUD DE COORDENADORIAS
-# =============================================================================
 def listar_coordenadorias() -> pd.DataFrame:
     db_url = os.getenv("NEON_DATABASE_URL")
     if not db_url: return pd.DataFrame()
@@ -918,38 +914,21 @@ def deletar_coordenadoria(coord_id: int) -> Tuple[bool, str]:
         return False, f"Erro ao deletar: {str(e)}"
 
 def render_coordenadorias_tab():
-    """Renderiza a sub-aba de Coordenadorias (grid + CRUD)."""
     if 'coord_editando' not in st.session_state: st.session_state.coord_editando = None
     if 'mostrar_form_coord' not in st.session_state: st.session_state.mostrar_form_coord = False
     if 'mostrar_confirmacao_exclusao_coord' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_coord = None
-    
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn2:
-        if st.button("➕ Nova Coordenadoria", width="stretch", type="primary"):
-            st.session_state.coord_editando = None
-            st.session_state.mostrar_form_coord = True
-            st.rerun()
-    
+        if st.button("➕ Nova Coordenadoria", width="stretch", type="primary", key="btn_nova_coord"):
+            st.session_state.coord_editando = None; st.session_state.mostrar_form_coord = True; st.rerun()
     df_coords = listar_coordenadorias()
-    
     if df_coords.empty:
         st.warning("⚠️ Nenhuma coordenadoria cadastrada. Clique em **➕ Nova Coordenadoria** para começar.")
     else:
         st.markdown(f"**Total de coordenadorias cadastradas:** {len(df_coords)}")
-        
-        st.dataframe(
-            df_coords[['id', 'descricao', 'ativo']],
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", width="small"),
-                "descricao": st.column_config.TextColumn("Descrição", width="large"),
-                "ativo": st.column_config.CheckboxColumn("Ativo")
-            }
-        )
-        
-        st.markdown("---")
-        st.markdown("### Ações")
+        st.dataframe(df_coords[['id', 'descricao', 'ativo']], width="stretch", hide_index=True,
+            column_config={"id": st.column_config.NumberColumn("ID", width="small"), "descricao": st.column_config.TextColumn("Descrição", width="large"), "ativo": st.column_config.CheckboxColumn("Ativo")})
+        st.markdown("---"); st.markdown("### Ações")
         options = [f"{row['id']} - {row['descricao']} ({'Ativo' if row['ativo'] else 'Inativo'})" for _, row in df_coords.iterrows()]
         if options:
             coord_selecionada = st.selectbox("Selecione uma coordenadoria para editar ou excluir:", options=options, index=0)
@@ -958,68 +937,239 @@ def render_coordenadorias_tab():
                 coord_dados = df_coords[df_coords['id'] == coord_id].iloc[0].to_dict()
                 col_edit, col_del = st.columns(2)
                 with col_edit:
-                    if st.button("✏️ Editar Coordenadoria", width="stretch"):
-                        st.session_state.coord_editando = coord_dados
-                        st.session_state.mostrar_form_coord = True
-                        st.rerun()
+                    if st.button("✏️ Editar Coordenadoria", width="stretch", key="btn_edit_coord"):
+                        st.session_state.coord_editando = coord_dados; st.session_state.mostrar_form_coord = True; st.rerun()
                 with col_del:
-                    if st.button("🗑️ Excluir Coordenadoria", width="stretch", type="secondary"):
-                        st.session_state.mostrar_confirmacao_exclusao_coord = coord_id
-                        st.rerun()
-    
+                    if st.button("🗑️ Excluir Coordenadoria", width="stretch", type="secondary", key="btn_del_coord"):
+                        st.session_state.mostrar_confirmacao_exclusao_coord = coord_id; st.rerun()
     if st.session_state.get('mostrar_confirmacao_exclusao_coord'):
         coord_id = st.session_state.mostrar_confirmacao_exclusao_coord
         coord_row = df_coords[df_coords['id'] == coord_id]
         if not coord_row.empty:
             coord_nome = coord_row.iloc[0]['descricao']
             st.warning(f"⚠️ Você está prestes a excluir a coordenadoria: **{coord_nome}**")
-            st.info("Esta ação não pode ser desfeita!")
             col_sim, col_nao = st.columns(2)
             with col_sim:
-                if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_coord"):
                     sucesso, msg = deletar_coordenadoria(coord_id)
+                    if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_confirmacao_exclusao_coord = None; st.rerun()
+                    else: st.error(f"❌ {msg}")
+            with col_nao:
+                if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_coord"): st.session_state.mostrar_confirmacao_exclusao_coord = None; st.rerun()
+    if st.session_state.get('mostrar_form_coord'):
+        st.markdown("---"); st.subheader("📝 " + ("Editar Coordenadoria" if st.session_state.coord_editando else "Nova Coordenadoria"))
+        coord = st.session_state.coord_editando or {}
+        with st.form("form_coordenadoria"):
+            descricao = st.text_input("Descrição *", value=coord.get('descricao', ''), placeholder="Ex: Coordenadoria de Tecnologia")
+            ativo = st.checkbox("Ativo", value=coord.get('ativo', True))
+            st.markdown("---")
+            col_submit, col_cancel = st.columns(2)
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary", key="btn_salvar_coord")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch", key="btn_cancelar_coord")
+            if cancelled: st.session_state.coord_editando = None; st.session_state.mostrar_form_coord = False; st.rerun()
+            if submitted:
+                if not descricao.strip(): st.error("⚠️ Descrição é obrigatória")
+                else:
+                    if st.session_state.coord_editando: sucesso, msg = atualizar_coordenadoria(st.session_state.coord_editando['id'], descricao, ativo)
+                    else: sucesso, msg = criar_coordenadoria(descricao, ativo)
+                    if sucesso: st.success(f"✅ {msg}"); st.session_state.coord_editando = None; st.session_state.mostrar_form_coord = False; st.rerun()
+                    else: st.error(f"❌ {msg}")
+
+def listar_coordenadoria_sq() -> pd.DataFrame:
+    """Lista associações coordenadoria-squad com nomes."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT cs.id, cs.id_coordenadoria, cs.id_squad, cs.created_at,
+                       c.descricao AS nome_coordenadoria,
+                       s.descricao AS nome_squad
+                FROM coordenadoria_squad cs
+                LEFT JOIN coordenadorias c ON cs.id_coordenadoria = c.id
+                LEFT JOIN squads s ON cs.id_squad = s.id
+                ORDER BY c.descricao, s.descricao
+            """)
+            rows = cur.fetchall()
+        conn.close(); return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao listar coordenadoria_squad: {e}"); return pd.DataFrame()
+
+def criar_coordenadoria_sq(id_coordenadoria: int, id_squad: int) -> Tuple[bool, str]:
+    """Cria associação coordenadoria-squad."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM coordenadoria_squad WHERE id_coordenadoria = %s AND id_squad = %s",
+                (int(id_coordenadoria), int(id_squad))
+            )
+            if cur.fetchone():
+                conn.close()
+                return False, "Esta coordenadoria já está associada a este squad."
+            cur.execute(
+                "INSERT INTO coordenadoria_squad (id_coordenadoria, id_squad) VALUES (%s, %s)",
+                (int(id_coordenadoria), int(id_squad))
+            )
+            conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Associação criada com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao criar: {str(e)}"
+
+def deletar_coordenadoria_sq(cs_id: int) -> Tuple[bool, str]:
+    """Remove associação coordenadoria-squad."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM coordenadoria_squad WHERE id = %s", (cs_id,)); conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Associação removida com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao deletar: {str(e)}"
+
+def listar_coordenadorias_options() -> List[Dict]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return []
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, descricao FROM coordenadorias WHERE ativo = TRUE ORDER BY descricao")
+            rows = cur.fetchall()
+        conn.close(); return rows
+    except Exception as e:
+        logger.error(f"Erro ao buscar coordenadorias options: {e}"); return []
+
+def listar_squads_options() -> List[Dict]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return []
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, descricao FROM squads WHERE ativo = TRUE ORDER BY descricao")
+            rows = cur.fetchall()
+        conn.close(); return rows
+    except Exception as e:
+        logger.error(f"Erro ao buscar squads options: {e}"); return []
+
+def render_coordenadoria_sq_tab():
+    if 'mostrar_form_cs' not in st.session_state: st.session_state.mostrar_form_cs = False
+    if 'mostrar_confirmacao_exclusao_cs' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_cs = None
+    
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn2:
+        if st.button("➕ Nova Associação", width="stretch", type="primary", key="btn_nova_assoc_cs"):
+            st.session_state.mostrar_form_cs = True
+            st.rerun()
+    
+    df_cs = listar_coordenadoria_sq()
+    
+    if df_cs.empty:
+        st.warning("⚠️ Nenhuma associação coordenadoria-squad cadastrada. Clique em **➕ Nova Associação** para começar.")
+    else:
+        st.markdown(f"**Total de associações:** {len(df_cs)}")
+        
+        st.dataframe(
+            df_cs[['id', 'nome_coordenadoria', 'nome_squad', 'created_at']],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "nome_coordenadoria": st.column_config.TextColumn("Coordenadoria", width="large"),
+                "nome_squad": st.column_config.TextColumn("Squad", width="large"),
+                "created_at": st.column_config.DatetimeColumn("Criado em", format="DD/MM/YYYY HH:mm")
+            }
+        )
+        
+        st.markdown("---")
+        st.markdown("### Ações")
+        options = [f"{row['id']} - {row['nome_coordenadoria']} ↔ {row['nome_squad']}" for _, row in df_cs.iterrows()]
+        if options:
+            cs_selecionada = st.selectbox("Selecione uma associação para excluir:", options=options, index=0)
+            if cs_selecionada:
+                cs_id = int(cs_selecionada.split(" - ")[0])
+                if st.button("🗑️ Excluir Associação", width="stretch", type="secondary", key="btn_del_assoc_cs"):
+                    st.session_state.mostrar_confirmacao_exclusao_cs = cs_id
+                    st.rerun()
+    
+    if st.session_state.get('mostrar_confirmacao_exclusao_cs'):
+        cs_id = st.session_state.mostrar_confirmacao_exclusao_cs
+        cs_row = df_cs[df_cs['id'] == cs_id]
+        if not cs_row.empty:
+            cs_nome = f"{cs_row.iloc[0]['nome_coordenadoria']} ↔ {cs_row.iloc[0]['nome_squad']}"
+            st.warning(f"⚠️ Você está prestes a excluir a associação: **{cs_nome}**")
+            col_sim, col_nao = st.columns(2)
+            with col_sim:
+                if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_cs"):
+                    sucesso, msg = deletar_coordenadoria_sq(cs_id)
                     if sucesso:
                         st.success(f"✅ {msg}")
-                        st.session_state.mostrar_confirmacao_exclusao_coord = None
+                        st.session_state.mostrar_confirmacao_exclusao_cs = None
                         st.rerun()
                     else:
                         st.error(f"❌ {msg}")
             with col_nao:
-                if st.button("❌ Não, Cancelar", width="stretch"):
-                    st.session_state.mostrar_confirmacao_exclusao_coord = None
+                if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_cs"):
+                    st.session_state.mostrar_confirmacao_exclusao_cs = None
                     st.rerun()
     
-    if st.session_state.get('mostrar_form_coord'):
+    if st.session_state.get('mostrar_form_cs'):
         st.markdown("---")
-        st.subheader("📝 " + ("Editar Coordenadoria" if st.session_state.coord_editando else "Nova Coordenadoria"))
-        coord = st.session_state.coord_editando or {}
+        st.subheader("📝 Nova Associação Coordenadoria-Squad")
         
-        with st.form("form_coordenadoria"):
-            descricao = st.text_input("Descrição *", value=coord.get('descricao', ''), placeholder="Ex: Coordenadoria de Tecnologia")
-            ativo = st.checkbox("Ativo", value=coord.get('ativo', True))
+        coordenadorias_options = listar_coordenadorias_options()
+        squads_options = listar_squads_options()
+        
+        if not coordenadorias_options:
+            st.error("⚠️ Nenhuma coordenadoria ativa cadastrada."); return
+        if not squads_options:
+            st.error("⚠️ Nenhum squad ativo cadastrado."); return
+        
+        with st.form("form_coordenadoria_sq"):
+            st.markdown("#### 🔗 Associação")
+            col1, col2 = st.columns(2)
+            with col1:
+                coord_options_dict = {c['id']: c['descricao'] for c in coordenadorias_options}
+                coord_labels = list(coord_options_dict.values())
+                coord_ids = list(coord_options_dict.keys())
+                coord_selecionado_label = st.selectbox("Coordenadoria *", options=coord_labels, index=0)
+                coord_selecionado_id = coord_ids[coord_labels.index(coord_selecionado_label)]
+            
+            with col2:
+                squad_options_dict = {s['id']: s['descricao'] for s in squads_options}
+                squad_labels = list(squad_options_dict.values())
+                squad_ids = list(squad_options_dict.keys())
+                squad_selecionado_label = st.selectbox("Squad *", options=squad_labels, index=0)
+                squad_selecionado_id = squad_ids[squad_labels.index(squad_selecionado_label)]
             
             st.markdown("---")
             col_submit, col_cancel = st.columns(2)
-            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
-            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary", key="btn_salvar_cs")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch", key="btn_cancelar_cs")
             
             if cancelled:
-                st.session_state.coord_editando = None
-                st.session_state.mostrar_form_coord = False
+                st.session_state.mostrar_form_cs = False
                 st.rerun()
             
             if submitted:
-                if not descricao.strip():
-                    st.error("⚠️ Descrição é obrigatória")
+                if not coord_selecionado_id:
+                    st.error("⚠️ Coordenadoria é obrigatória")
+                elif not squad_selecionado_id:
+                    st.error("⚠️ Squad é obrigatório")
                 else:
-                    if st.session_state.coord_editando:
-                        sucesso, msg = atualizar_coordenadoria(st.session_state.coord_editando['id'], descricao, ativo)
-                    else:
-                        sucesso, msg = criar_coordenadoria(descricao, ativo)
+                    sucesso, msg = criar_coordenadoria_sq(coord_selecionado_id, squad_selecionado_id)
                     if sucesso:
                         st.success(f"✅ {msg}")
-                        st.session_state.coord_editando = None
-                        st.session_state.mostrar_form_coord = False
+                        st.session_state.mostrar_form_cs = False
                         st.rerun()
                     else:
                         st.error(f"❌ {msg}")
@@ -1580,23 +1730,23 @@ def render_ponto_tab(year, month_name, month_num, tipo_usuario):
     if pode_editar:
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
-            if st.button("📤 Importar CSV", width="stretch", type="primary"):
+            if st.button("📤 Importar CSV", width="stretch", type="primary", key="btn_importar_csv_ponto"):
                 st.session_state.mostrar_importacao = True; st.session_state.mostrar_confirmacao_limpar = False; st.session_state.importacao_em_andamento = False; st.rerun()
         with col_btn2:
             if not df_horasponto.empty:
-                if st.button("🗑️ Limpar Período", width="stretch", type="secondary"):
+                if st.button("🗑️ Limpar Período", width="stretch", type="secondary", key="btn_limpar_periodo"):
                     st.session_state.mostrar_confirmacao_limpar = True; st.session_state.mostrar_importacao = False; st.rerun()
         if st.session_state.get('mostrar_confirmacao_limpar'):
             st.warning(f"⚠️ Você está prestes a excluir **todos os registros** de {month_name}/{year}")
             st.info(f"Total de registros: **{len(df_horasponto)}**")
             col_sim, col_nao = st.columns(2)
             with col_sim:
-                if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_ponto"):
                     sucesso, msg = deletar_horasponto_by_periodo(year, month_num)
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_confirmacao_limpar = False; st.rerun()
                     else: st.error(f"❌ {msg}")
             with col_nao:
-                if st.button("❌ Não, Cancelar", width="stretch"): st.session_state.mostrar_confirmacao_limpar = False; st.rerun()
+                if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_ponto"): st.session_state.mostrar_confirmacao_limpar = False; st.rerun()
         if st.session_state.get('mostrar_importacao'):
             st.markdown("---")
             st.subheader("📤 Importar Arquivo CSV de Ponto")
@@ -1649,7 +1799,7 @@ def render_ponto_tab(year, month_name, month_num, tipo_usuario):
                                 if st.button("✅ Confirmar Importação", width="stretch", type="primary", key="btn_confirmar_importacao"):
                                     st.session_state.importacao_em_andamento = True; st.rerun()
                             with col_cancelar:
-                                if st.button("❌ Cancelar", width="stretch"):
+                                if st.button("❌ Cancelar", width="stretch", key="btn_cancelar_importacao"):
                                     st.session_state.mostrar_importacao = False; st.session_state.importacao_em_andamento = False; st.rerun()
                             if st.session_state.get('importacao_em_andamento'):
                                 with st.spinner("🔄 Processando importação em lote..."):
@@ -1700,20 +1850,22 @@ def render_ponto_tab(year, month_name, month_num, tipo_usuario):
         csv_data = df_horasponto_atualizado.to_csv(index=False, encoding='utf-8')
         st.download_button("⬇️ Baixar CSV do Período", data=csv_data, file_name=f"horasponto_{year}_{month_name}.csv", mime="text/csv", width="stretch")
 
-# =============================================================================
-# ✅ MODIFICADA: Estruturação agora com 3 sub-abas
-# =============================================================================
 def render_estruturacao_tab():
     tipo_usuario = st.session_state.user_info.get('cargo', 'User')
     if tipo_usuario not in ['Admin', 'Gestor']:
         st.error("🚫 Acesso negado. Apenas Administradores e Gestores podem acessar esta funcionalidade.")
         st.stop()
     st.subheader("🏗️ Estruturação")
-    # ✅ 3 sub-abas: Projetos, Squads e Coordenadorias
-    sub_tab_projetos, sub_tab_squads, sub_tab_coords = st.tabs(["🏢 Projetos", "👥 Squads", "🏛️ Coordenadorias"])
+    sub_tab_projetos, sub_tab_squads, sub_tab_coords, sub_tab_cs = st.tabs([
+        "🏢 Projetos", 
+        "👥 Squads", 
+        "🏛️ Coordenadorias",
+        "🔗 Coordenadorias x Squads"
+    ])
     with sub_tab_projetos: render_projetos_tab()
     with sub_tab_squads: render_squads_tab()
     with sub_tab_coords: render_coordenadorias_tab()
+    with sub_tab_cs: render_coordenadoria_sq_tab()
 
 def render_projetos_tab():
     if 'projeto_editando' not in st.session_state: st.session_state.projeto_editando = None
@@ -1721,7 +1873,7 @@ def render_projetos_tab():
     if 'mostrar_confirmacao_exclusao_projeto' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_projeto = None
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn2:
-        if st.button("➕ Novo Projeto", width="stretch", type="primary"):
+        if st.button("➕ Novo Projeto", width="stretch", type="primary", key="btn_novo_projeto"):
             st.session_state.projeto_editando = None; st.session_state.mostrar_form_projeto = True; st.rerun()
     df_projetos = listar_projetos()
     if df_projetos.empty:
@@ -1744,21 +1896,21 @@ def render_projetos_tab():
             projeto_dados = df_projetos[df_projetos['id'] == projeto_id].iloc[0].to_dict()
             col_edit, col_del = st.columns(2)
             with col_edit:
-                if st.button("✏️ Editar Projeto", width="stretch"): st.session_state.projeto_editando = projeto_dados; st.session_state.mostrar_form_projeto = True; st.rerun()
+                if st.button("✏️ Editar Projeto", width="stretch", key="btn_edit_projeto"): st.session_state.projeto_editando = projeto_dados; st.session_state.mostrar_form_projeto = True; st.rerun()
             with col_del:
-                if st.button("🗑️ Excluir Projeto", width="stretch", type="secondary"): st.session_state.mostrar_confirmacao_exclusao_projeto = projeto_id; st.rerun()
+                if st.button("🗑️ Excluir Projeto", width="stretch", type="secondary", key="btn_del_projeto"): st.session_state.mostrar_confirmacao_exclusao_projeto = projeto_id; st.rerun()
     if st.session_state.get('mostrar_confirmacao_exclusao_projeto'):
         col_id = st.session_state.mostrar_confirmacao_exclusao_projeto
         col_nome = df_projetos[df_projetos['id'] == col_id]['name'].values[0]
         st.warning(f"⚠️ Você está prestes a excluir o projeto: **{col_nome}**")
         col_sim, col_nao = st.columns(2)
         with col_sim:
-            if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+            if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_projeto"):
                 sucesso, msg = deletar_projeto(col_id)
                 if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_confirmacao_exclusao_projeto = None; st.rerun()
                 else: st.error(f"❌ {msg}")
         with col_nao:
-            if st.button("❌ Não, Cancelar", width="stretch"): st.session_state.mostrar_confirmacao_exclusao_projeto = None; st.rerun()
+            if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_projeto"): st.session_state.mostrar_confirmacao_exclusao_projeto = None; st.rerun()
     if st.session_state.get('mostrar_form_projeto'):
         st.markdown("---"); st.subheader("📝 " + ("Editar Projeto" if st.session_state.projeto_editando else "Novo Projeto"))
         projeto = st.session_state.projeto_editando or {}
@@ -1767,8 +1919,8 @@ def render_projetos_tab():
             is_active = st.checkbox("Projeto Ativo", value=projeto.get('is_active', True))
             st.markdown("---")
             col_submit, col_cancel = st.columns(2)
-            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
-            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary", key="btn_salvar_projeto")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch", key="btn_cancelar_projeto")
             if cancelled: st.session_state.projeto_editando = None; st.session_state.mostrar_form_projeto = False; st.rerun()
             if submitted:
                 if not name.strip(): st.error("⚠️ Nome do projeto é obrigatório")
@@ -1794,7 +1946,7 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
     if 'mostrar_confirmacao_exclusao' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao = None
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn2:
-        if st.button("➕ Novo Colaborador", width="stretch", type="primary"):
+        if st.button("➕ Novo Colaborador", width="stretch", type="primary", key="btn_novo_colab"):
             st.session_state.colaborador_editando = None; st.session_state.mostrar_form_colaborador = True; st.rerun()
     
     if df_colaboradores_filtrados is not None:
@@ -1838,10 +1990,10 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             colaborador_dados = df_colaboradores[df_colaboradores['id'] == colaborador_id].iloc[0].to_dict()
             col_edit, col_del = st.columns(2)
             with col_edit:
-                if st.button("✏️ Editar Colaborador", width="stretch"):
+                if st.button("✏️ Editar Colaborador", width="stretch", key="btn_edit_colab"):
                     st.session_state.colaborador_editando = colaborador_dados; st.session_state.mostrar_form_colaborador = True; st.rerun()
             with col_del:
-                if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary"):
+                if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary", key="btn_del_colab"):
                     st.session_state.mostrar_confirmacao_exclusao = colaborador_id; st.rerun()
     if st.session_state.get('mostrar_confirmacao_exclusao'):
         col_id = st.session_state.mostrar_confirmacao_exclusao
@@ -1849,12 +2001,12 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
         st.warning(f"⚠️ Você está prestes a excluir o colaborador: **{col_nome}**")
         col_sim, col_nao = st.columns(2)
         with col_sim:
-            if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+            if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_colab"):
                 sucesso, msg = deletar_colaborador(col_id)
                 if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
                 else: st.error(f"❌ {msg}")
         with col_nao:
-            if st.button("❌ Não, Cancelar", width="stretch"): st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
+            if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_colab"): st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
     if st.session_state.get('mostrar_form_colaborador'):
         st.markdown("---"); st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
         colaborador = st.session_state.colaborador_editando or {}
@@ -1901,8 +2053,8 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                 mes_aniv = st.number_input("Mês do Aniversário", min_value=1, max_value=12, value=int(colaborador.get('mes_aniv') or 1))
             st.markdown("---")
             col_submit, col_cancel = st.columns(2)
-            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
-            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary", key="btn_salvar_colab")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch", key="btn_cancelar_colab")
             if cancelled: st.session_state.colaborador_editando = None; st.session_state.mostrar_form_colaborador = False; st.rerun()
             if submitted:
                 erros = []
@@ -1926,7 +2078,7 @@ def _render_colab_projetos():
     if 'mostrar_confirmacao_exclusao_cp' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_cp = None
     col_btn1, col_btn2 = st.columns([3, 1])
     with col_btn2:
-        if st.button("➕ Nova Associação", width="stretch", type="primary"):
+        if st.button("➕ Nova Associação", width="stretch", type="primary", key="btn_nova_assoc_colab_proj"):
             st.session_state.colab_projeto_editando = None; st.session_state.mostrar_form_colab_projeto = True; st.rerun()
     df_colab_projetos = listar_colab_projetos()
     if df_colab_projetos.empty:
@@ -1950,10 +2102,10 @@ def _render_colab_projetos():
                 cp_dados = df_colab_projetos[df_colab_projetos['id'] == cp_id].iloc[0].to_dict()
                 col_edit, col_del = st.columns(2)
                 with col_edit:
-                    if st.button("✏️ Editar Associação", width="stretch"):
+                    if st.button("✏️ Editar Associação", width="stretch", key="btn_edit_assoc_cp"):
                         st.session_state.colab_projeto_editando = cp_dados; st.session_state.mostrar_form_colab_projeto = True; st.rerun()
                 with col_del:
-                    if st.button("🗑️ Excluir Associação", width="stretch", type="secondary"):
+                    if st.button("🗑️ Excluir Associação", width="stretch", type="secondary", key="btn_del_assoc_cp"):
                         st.session_state.mostrar_confirmacao_exclusao_cp = cp_id; st.rerun()
     if st.session_state.get('mostrar_confirmacao_exclusao_cp'):
         cp_id = st.session_state.mostrar_confirmacao_exclusao_cp
@@ -1963,12 +2115,12 @@ def _render_colab_projetos():
             st.warning(f"⚠️ Você está prestes a excluir a associação: **{cp_nome}**")
             col_sim, col_nao = st.columns(2)
             with col_sim:
-                if st.button("✅ Sim, Excluir", width="stretch", type="primary"):
+                if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_cp"):
                     sucesso, msg = deletar_colab_projeto(cp_id)
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_confirmacao_exclusao_cp = None; st.rerun()
                     else: st.error(f"❌ {msg}")
             with col_nao:
-                if st.button("❌ Não, Cancelar", width="stretch"): st.session_state.mostrar_confirmacao_exclusao_cp = None; st.rerun()
+                if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_cp"): st.session_state.mostrar_confirmacao_exclusao_cp = None; st.rerun()
     if st.session_state.get('mostrar_form_colab_projeto'):
         st.markdown("---"); st.subheader("📝 " + ("Editar Associação" if st.session_state.colab_projeto_editando else "Nova Associação Colaborador-Projeto"))
         cp_dados = st.session_state.colab_projeto_editando or {}
@@ -1997,8 +2149,8 @@ def _render_colab_projetos():
                 proj_selecionado_id = proj_ids[proj_labels.index(proj_selecionado_label)]
             st.markdown("---")
             col_submit, col_cancel = st.columns(2)
-            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary")
-            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+            with col_submit: submitted = st.form_submit_button("💾 Salvar", width="stretch", type="primary", key="btn_salvar_cp")
+            with col_cancel: cancelled = st.form_submit_button("❌ Cancelar", width="stretch", key="btn_cancelar_cp")
             if cancelled: st.session_state.colab_projeto_editando = None; st.session_state.mostrar_form_colab_projeto = False; st.rerun()
             if submitted:
                 if not colab_selecionado_id: st.error("⚠️ Colaborador é obrigatório")
@@ -2287,7 +2439,7 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
     if pode_calcular:
         col_btn1, col_btn2 = st.columns([3, 1])
         with col_btn1:
-            if st.button("🧮 Calcular Faturamento", width="stretch", type="primary"):
+            if st.button("🧮 Calcular Faturamento", width="stretch", type="primary", key="btn_calcular_faturamento"):
                 if faturamento_existente: st.session_state.mostrar_alerta_recuperar = True; st.rerun()
                 else:
                     with st.spinner("Calculando faturamento..."):
@@ -2302,7 +2454,7 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
             st.warning(f"⚠️ **Atenção:** Já existem dados de faturamento para **{month_name}/{year}** no banco de dados.")
             col_sim, col_nao = st.columns(2)
             with col_sim:
-                if st.button("✅ Sim, Recalcular", width="stretch", type="primary"):
+                if st.button("✅ Sim, Recalcular", width="stretch", type="primary", key="btn_sim_recalcular"):
                     with st.spinner("Recalculando faturamento..."):
                         sucesso_del, msg_del = deletar_faturamento_existente(year, month_num)
                         if sucesso_del:
@@ -2316,7 +2468,7 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
                             else: st.error(f"❌ {msg_save}")
                         else: st.error(f"❌ {msg_del}")
             with col_nao:
-                if st.button("❌ Não, Cancelar", width="stretch"): st.session_state.mostrar_alerta_recuperar = False; st.rerun()
+                if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_recalcular"): st.session_state.mostrar_alerta_recuperar = False; st.rerun()
     else:
         if faturamento_existente: st.info(f"👁️ **Modo visualização** (Auditor) — Faturamento existente para **{month_name}/{year}** | Total: **{format_moeda_brl(faturamento_existente['total_faturado'])}**")
         else: st.info("👁️ **Modo visualização** (Auditor) — Nenhum faturamento calculado para este período.")
@@ -2373,7 +2525,7 @@ def render_crud_perfil():
             with col1: tipo = st.selectbox("Tipo de Usuário", options=['User', 'Admin', 'Gestor', 'Auditor'], index=['User', 'Admin', 'Gestor', 'Auditor'].index(usuario_dados.get('tipo', 'User')))
             with col2: status = st.selectbox("Status", options=['Ativo', 'Inativo', 'Bloqueado', 'Pendente'], index=['Ativo', 'Inativo', 'Bloqueado', 'Pendente'].index(usuario_dados.get('status', 'Ativo')))
         else: tipo, status = usuario_dados.get('tipo', 'User'), usuario_dados.get('status', 'Ativo')
-        submitted = st.form_submit_button("💾 Salvar Alterações", width="stretch")
+        submitted = st.form_submit_button("💾 Salvar Alterações", width="stretch", key="btn_salvar_perfil")
         if submitted:
             dados = {'nome': nome.strip(), 'email': email.lower().strip(), 'apikey': apikey.strip()}
             if senha_hash and len(senha_hash) >= 6: dados['senha_hash'] = senha_hash
@@ -2402,7 +2554,7 @@ def render_login_screen():
             with st.form("login_form"):
                 email = st.text_input("E-mail ou Usuário", placeholder="nome@spassu.com.br")
                 password = st.text_input("Senha", type="password", placeholder="••••••••")
-                submitted = st.form_submit_button("Acessar Painel", width="stretch")
+                submitted = st.form_submit_button("Acessar Painel", width="stretch", key="btn_acessar")
                 if submitted:
                     if email and password:
                         user = authenticate_user(email, password)
@@ -2418,15 +2570,15 @@ def render_login_screen():
             st.markdown("")
             col_btn1, col_btn2 = st.columns([3, 1])
             with col_btn2:
-                if st.button("Esqueci minha senha", width="stretch"): st.session_state.login_view = "forgot"; st.rerun()
+                if st.button("Esqueci minha senha", width="stretch", key="btn_esqueci_senha"): st.session_state.login_view = "forgot"; st.rerun()
             st.markdown('<div style="display:flex; align-items:center; text-align:center; margin:28px 0; color:rgba(255,255,255,0.7); font-size:0.8rem; font-weight:600;"><div style="flex:1; border-bottom:1px solid rgba(255,255,255,0.25); margin-right:12px;"></div>OU<div style="flex:1; border-bottom:1px solid rgba(255,255,255,0.25); margin-left:12px;"></div></div>', unsafe_allow_html=True)
-            if st.button("Primeiro Acesso? Ativar Conta", width="stretch"): st.session_state.login_view = "register"; st.rerun()
+            if st.button("Primeiro Acesso? Ativar Conta", width="stretch", key="btn_primeiro_acesso"): st.session_state.login_view = "register"; st.rerun()
         elif view == "forgot":
             st.markdown("<h2 style='color:white; font-weight:700;'>Recuperação de Senha</h2>", unsafe_allow_html=True)
             st.markdown("<p style='color:#e6e6e6; margin-bottom:30px;'>Insira seu e-mail para receber o token de recuperação</p>", unsafe_allow_html=True)
             with st.form("forgot_form"):
                 email = st.text_input("E-mail Cadastrado", placeholder="seu.email@spassu.com.br")
-                submitted = st.form_submit_button("Gerar Token de Recuperação", width="stretch")
+                submitted = st.form_submit_button("Gerar Token de Recuperação", width="stretch", key="btn_gerar_token")
                 if submitted:
                     if not email: st.error("⚠️ Informe o e-mail.")
                     else:
@@ -2437,22 +2589,22 @@ def render_login_screen():
                             st.session_state.reset_token = token; st.session_state.reset_email = email; st.session_state.go_to_reset = True
                         else: st.error(f"❌ {msg}")
             if st.session_state.get('go_to_reset'):
-                if st.button("Redefinir Senha Agora →", width="stretch"): st.session_state.login_view = "reset_password"; st.session_state.go_to_reset = False; st.rerun()
-            if st.button("← Voltar ao Login", width="stretch"): st.session_state.login_view = "login"; st.session_state.go_to_reset = False; st.rerun()
+                if st.button("Redefinir Senha Agora →", width="stretch", key="btn_redefinir_agora"): st.session_state.login_view = "reset_password"; st.session_state.go_to_reset = False; st.rerun()
+            if st.button("← Voltar ao Login", width="stretch", key="btn_voltar_login_forgot"): st.session_state.login_view = "login"; st.session_state.go_to_reset = False; st.rerun()
         elif view == "reset_password":
             st.markdown("<h2 style='color:white; font-weight:700;'>Redefinir Senha</h2>", unsafe_allow_html=True)
             with st.form("reset_form"):
                 token = st.text_input("Token de Recuperação", value=st.session_state.get('reset_token', ''))
                 nova_senha = st.text_input("Nova Senha", type="password")
                 confirmar_senha = st.text_input("Confirme a Nova Senha", type="password")
-                submitted = st.form_submit_button("Redefinir Senha", width="stretch")
+                submitted = st.form_submit_button("Redefinir Senha", width="stretch", key="btn_redefinir_senha")
                 if submitted:
                     if not token or not nova_senha or nova_senha != confirmar_senha: st.error("⚠️ Verifique os dados informados.")
                     else:
                         sucesso, msg = redefinir_senha(token, nova_senha)
                         if sucesso: st.success(f"✅ {msg}"); st.session_state.login_view = "login"; st.rerun()
                         else: st.error(f"❌ {msg}")
-            if st.button("← Voltar ao Login", width="stretch"): st.session_state.login_view = "login"; st.rerun()
+            if st.button("← Voltar ao Login", width="stretch", key="btn_voltar_login_reset"): st.session_state.login_view = "login"; st.rerun()
         elif view == "register":
             st.markdown("<h2 style='color:white; font-weight:700;'>Primeiro Acesso</h2>", unsafe_allow_html=True)
             with st.form("register_form", clear_on_submit=True):
@@ -2460,14 +2612,14 @@ def render_login_screen():
                 apikey = st.text_input("API Key do Azure DevOps")
                 senha = st.text_input("Crie uma Senha", type="password")
                 confirmar_senha = st.text_input("Confirme a Senha", type="password")
-                submitted = st.form_submit_button("Validar e Criar Conta", width="stretch")
+                submitted = st.form_submit_button("Validar e Criar Conta", width="stretch", key="btn_criar_conta")
                 if submitted:
                     if not nome or not email or not apikey or not senha or senha != confirmar_senha: st.error("⚠️ Preencha os campos corretamente.")
                     else:
                         sucesso, msg = criar_usuario_com_apikey(nome, email, senha, apikey.strip())
                         if sucesso: st.success(f"✅ {msg}"); st.session_state.login_view = "login"; st.rerun()
                         else: st.error(f"❌ {msg}")
-            if st.button("Já possuo senha (Entrar)", width="stretch"): st.session_state.login_view = "login"; st.rerun()
+            if st.button("Já possuo senha (Entrar)", width="stretch", key="btn_ja_possuo_senha"): st.session_state.login_view = "login"; st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
     st.markdown(f'<div style="position:fixed;bottom:30px;right:40px;display:flex;align-items:center;gap:20px;z-index:100;"><img src="{SPASSU_LOGO_URL}" style="height:40px;"><div style="width:1px;height:40px;background:rgba(255,255,255,0.5);"></div><img src="{SME_LOGO_URL}" style="height:40px;"></div>', unsafe_allow_html=True)
 
@@ -2480,21 +2632,20 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.success(f"👤 {st.session_state.user_info['nome_completo']}")
     st.sidebar.caption(f"Tipo: {st.session_state.user_info.get('cargo', 'User')}")
-    if st.sidebar.button("⚙️ Perfil", width="stretch"): st.session_state.show_perfil = True; st.rerun()
-    if st.sidebar.button("🚪 Sair do Sistema", width="stretch"):
+    if st.sidebar.button("⚙️ Perfil", width="stretch", key="btn_perfil"): st.session_state.show_perfil = True; st.rerun()
+    if st.sidebar.button("🚪 Sair do Sistema", width="stretch", key="btn_sair"):
         st.session_state.logged_in = False; st.session_state.user_info = None; st.session_state.show_perfil = False; st.rerun()
     if st.session_state.get('show_perfil'):
         st.title("⚙️ Gerenciamento de Perfil"); render_crud_perfil()
-        if st.button("← Voltar ao Dashboard"): st.session_state.show_perfil = False; st.rerun()
+        if st.button("← Voltar ao Dashboard", key="btn_voltar_dashboard"): st.session_state.show_perfil = False; st.rerun()
         return
     st.title("📊 Dashboard de Acompanhamento de Entregas")
     st.caption("Azure DevOps • SME-Spassu • Sprint Tracker")
     st.markdown("---")
     st.sidebar.header("⚙️ Configuração & Filtros")
-    if st.sidebar.button("🔄 Atualizar Dados", width="stretch", type="primary", help="Recarrega todos os dados do Azure DevOps e banco de dados"):
+    if st.sidebar.button("🔄 Atualizar Dados", width="stretch", type="primary", help="Recarrega todos os dados do Azure DevOps e banco de dados", key="btn_atualizar_dados"):
         st.cache_data.clear(); st.cache_resource.clear(); st.session_state.periodo_anterior = None; st.rerun()
     
-    # Filtro de Gestor na Sidebar (apenas nomes)
     gestores_lista = listar_gestores_filtro()
     gestores_nomes = [g['nome'] for g in gestores_lista]
     gestor_nome_para_id = {g['nome']: g['id'] for g in gestores_lista}
@@ -2574,7 +2725,6 @@ def main():
                 for item_id, item in items.items():
                     all_workitems[item_id] = item; project_of_item[item_id] = proj
     
-    # Carregar colaboradores e aplicar filtro de gestor
     df_colaboradores = listar_colaboradores()
     
     if gestores_selecionados_ids:
