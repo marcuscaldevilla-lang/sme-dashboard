@@ -2169,14 +2169,27 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             with col3:
                 reposicao = st.text_input("Novo Colaborador (Reposição)", value=colaborador.get('reposicao', ''))
                 status = st.selectbox("Status", options=["Ativo", "Inativo", "Bloqueado"], index=["Ativo", "Inativo", "Bloqueado"].index(colaborador.get('status', 'Ativo')) if colaborador.get('status', 'Ativo') in ["Ativo", "Inativo", "Bloqueado"] else 0)
-                gestor_id = colaborador.get('gestor'); gestor_index = 0
-                if gestor_id and int(gestor_id) in gestores_options: gestor_index = list(gestores_options.keys()).index(int(gestor_id))
+                
+                # ✅ Validação segura do gestor_id
+                gestor_id = colaborador.get('gestor')
+                gestor_index = 0
+                if gestor_id is not None:
+                    try:
+                        gestor_id_int = int(gestor_id)
+                        if gestor_id_int in gestores_options and gestor_id_int != 0:
+                            gestor_index = list(gestores_options.keys()).index(gestor_id_int)
+                    except (ValueError, TypeError):
+                        pass
+                
                 gestor_selecionado = st.selectbox("Gestor", options=list(gestores_options.values()), index=gestor_index)
                 gestor_id_selecionado = [k for k, v in gestores_options.items() if v == gestor_selecionado][0]
+            
             st.markdown("#### 🔗 Links e Aniversário")
             col1, col2, col3 = st.columns(3)
-            with col1: linkedin = st.text_input("LinkedIn", value=colaborador.get('linkedin', ''))
-            with col2: github = st.text_input("GitHub", value=colaborador.get('github', ''))
+            with col1:
+                linkedin = st.text_input("LinkedIn", value=colaborador.get('linkedin', ''))
+            with col2:
+                github = st.text_input("GitHub", value=colaborador.get('github', ''))
             with col3:
                 dia_aniv = st.number_input("Dia do Aniversário", min_value=1, max_value=31, value=int(colaborador.get('dia_aniv') or 1))
                 mes_aniv = st.number_input("Mês do Aniversário", min_value=1, max_value=12, value=int(colaborador.get('mes_aniv') or 1))
