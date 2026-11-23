@@ -559,6 +559,108 @@ def deletar_colaborador(colaborador_id: int) -> Tuple[bool, str]:
         if conn: conn.rollback(); conn.close()
         return False, f"Erro ao deletar: {str(e)}"
 
+# =============================================================================
+# 🆕 HISTÓRICO DE ALTERAÇÕES DE COLABORADORES
+# =============================================================================
+@st.cache_data(ttl=30, show_spinner=False)
+def buscar_historico_colaborador(id_colaborador: int) -> pd.DataFrame:
+    """Busca todas as alterações registradas para um colaborador."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        logger.error("❌ NEON_DATABASE_URL não configurado")
+        return pd.DataFrame()
+    
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # ✅ Query corrigida com o nome real da coluna: alterado_em
+            cur.execute("""
+                SELECT cla.id, 
+                       cla.id_colaborador, 
+                       cla.campo_alterado,
+                       cla.valor_anterior, 
+                       cla.valor_novo,
+                       cla.alterado_em AS data_alteracao,
+                       c.colaborador_ponto AS nome_colaborador
+                FROM colaboradores_log_alteracoes cla
+                LEFT JOIN colaboradores c ON cla.id_colaborador = c.id
+                WHERE cla.id_colaborador = %s
+                ORDER BY cla.alterado_em DESC
+            """, (id_colaborador,))
+            rows = cur.fetchall()
+            
+            logger.info(f"✅ {len(rows)} registro(s) de histórico encontrados para colaborador ID={id_colaborador}")
+            
+        conn.close()
+        
+        if not rows:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(rows)
+        
+        # Formatar a coluna de data para exibição
+        if 'data_alteracao' in df.columns:
+            df['data_alteracao'] = pd.to_datetime(df['data_alteracao'], errors='coerce').dt.strftime('%d/%m/%Y %H:%M:%S')
+        
+        return df
+        
+    except psycopg2.Error as e:
+        logger.error(f"❌ Erro PostgreSQL ao buscar histórico: {e}")
+        logger.error(f"   SQL State: {getattr(e, 'pgcode', 'N/A')}")
+        if conn: conn.close()
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar histórico: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        if conn: conn.close()
+        return pd.DataFrame()
+
+@st.dialog("📜 Histórico de Alterações", width="large")
+def mostrar_historico_modal(id_colaborador: int, nome_colaborador: str):
+    """Modal que exibe o histórico de alterações de um colaborador."""
+    st.markdown(f"### 👤 {nome_colaborador}")
+    st.caption(f"ID do colaborador: **{id_colaborador}**")
+    st.markdown("---")
+    
+    df_historico = buscar_historico_colaborador(id_colaborador)
+    
+    if df_historico.empty:
+        st.info("📭 Nenhuma alteração registrada para este colaborador.")
+    else:
+        st.success(f"📊 **{len(df_historico)}** alteração(ões) encontrada(s)")
+        st.markdown("---")
+        
+        # ✅ Colunas desejadas na ordem de exibição
+        colunas_desejadas = ['id', 'campo_alterado', 'valor_anterior', 'valor_novo', 'data_alteracao', 'usuario_alteracao']
+        
+        # ✅ Filtrar apenas colunas que realmente existem no DataFrame
+        colunas_existentes = [col for col in colunas_desejadas if col in df_historico.columns]
+        
+        # ✅ Adicionar colunas extras que existam no DataFrame mas não estavam na lista
+        colunas_extra = [col for col in df_historico.columns if col not in colunas_desejadas and col != 'nome_colaborador']
+        colunas_exibicao = colunas_existentes + colunas_extra
+        
+        st.dataframe(
+            df_historico[colunas_exibicao],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "campo_alterado": st.column_config.TextColumn("Campo Alterado", width="medium"),
+                "valor_anterior": st.column_config.TextColumn("Valor Anterior", width="large"),
+                "valor_novo": st.column_config.TextColumn("Valor Novo", width="large"),
+                "data_alteracao": st.column_config.TextColumn("Data/Hora", width="medium"),
+                "usuario_alteracao": st.column_config.TextColumn("Usuário", width="medium"),
+                "nome_colaborador": st.column_config.TextColumn("Colaborador", width="large")
+            }
+        )
+    
+    st.markdown("---")
+    if st.button("✖️ Fechar", width="stretch", key="btn_fechar_historico"):
+        st.rerun()
+
 def render_destaques_semana(df_colaboradores):
     if df_colaboradores.empty: return
     df_ativos = df_colaboradores.copy()
@@ -725,75 +827,6 @@ def deletar_colab_projeto(colab_projeto_id: int) -> Tuple[bool, str]:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor() as cur:
             cur.execute("DELETE FROM colab_projetos WHERE id = %s", (colab_projeto_id,)); conn.commit()
-        conn.close(); st.cache_data.clear()
-        return True, "Associação removida com sucesso!"
-    except Exception as e:
-        if conn: conn.rollback(); conn.close()
-        return False, f"Erro ao deletar: {str(e)}"
-
-# =============================================================================
-# CRUD DE COLAB_SQUAD (Associação Colaborador x Squad)
-# =============================================================================
-def listar_colab_squad() -> pd.DataFrame:
-    """Lista associações colaborador-squad com nomes e coordenadoria."""
-    db_url = os.getenv("NEON_DATABASE_URL")
-    if not db_url: return pd.DataFrame()
-    try:
-        conn = psycopg2.connect(db_url, connect_timeout=10)
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT cs.id, cs.id_colab, cs.id_squad, cs.created_at,
-                       c.colaborador_ponto AS nome_colaborador,
-                       c.cargo,
-                       s.descricao AS nome_squad,
-                       co.descricao AS nome_coordenadoria
-                FROM colab_squad cs
-                LEFT JOIN colaboradores c ON cs.id_colab = c.id
-                LEFT JOIN squads s ON cs.id_squad = s.id
-                LEFT JOIN coordenadoria_squad csq ON cs.id_squad = csq.id_squad
-                LEFT JOIN coordenadorias co ON csq.id_coordenadoria = co.id
-                ORDER BY c.colaborador_ponto, co.descricao, s.descricao
-            """)
-            rows = cur.fetchall()
-        conn.close(); return pd.DataFrame(rows)
-    except Exception as e:
-        logger.error(f"Erro ao listar colab_squad: {e}"); return pd.DataFrame()
-
-def criar_colab_squad(id_colab: int, id_squad: int) -> Tuple[bool, str]:
-    """Cria associação colaborador-squad."""
-    db_url = os.getenv("NEON_DATABASE_URL")
-    if not db_url: return False, "Banco de dados não configurado."
-    conn = None
-    try:
-        conn = psycopg2.connect(db_url, connect_timeout=10)
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM colab_squad WHERE id_colab = %s AND id_squad = %s",
-                (int(id_colab), int(id_squad))
-            )
-            if cur.fetchone():
-                conn.close()
-                return False, "Este colaborador já está associado a este squad."
-            cur.execute(
-                "INSERT INTO colab_squad (id_colab, id_squad) VALUES (%s, %s)",
-                (int(id_colab), int(id_squad))
-            )
-            conn.commit()
-        conn.close(); st.cache_data.clear()
-        return True, "Associação criada com sucesso!"
-    except Exception as e:
-        if conn: conn.rollback(); conn.close()
-        return False, f"Erro ao criar: {str(e)}"
-
-def deletar_colab_squad(cs_id: int) -> Tuple[bool, str]:
-    """Remove associação colaborador-squad."""
-    db_url = os.getenv("NEON_DATABASE_URL")
-    if not db_url: return False, "Banco de dados não configurado."
-    conn = None
-    try:
-        conn = psycopg2.connect(db_url, connect_timeout=10)
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM colab_squad WHERE id = %s", (cs_id,)); conn.commit()
         conn.close(); st.cache_data.clear()
         return True, "Associação removida com sucesso!"
     except Exception as e:
@@ -1996,9 +2029,6 @@ def render_projetos_tab():
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.projeto_editando = None; st.session_state.mostrar_form_projeto = False; st.rerun()
                     else: st.error(f"❌ {msg}")
 
-# =============================================================================
-# ✅ COLABORADORES COM 3 SUB-ABAS (Informações, Projetos, Squads)
-# =============================================================================
 def render_colaboradores_tab(df_colaboradores_filtrados=None):
     tipo_usuario = st.session_state.user_info.get('cargo', 'User')
     if tipo_usuario not in ['Admin', 'Gestor']:
@@ -2036,12 +2066,9 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
     if df_colaboradores.empty:
         st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
     else:
-        # =====================================================================
         # 🔍 FILTROS DE CARGO E NÍVEL
-        # =====================================================================
         st.markdown("### 🔍 Filtros")
         
-        # Extrair valores únicos de cargo e nível (ignorando nulos)
         cargos_unicos = sorted([c for c in df_colaboradores['cargo'].dropna().unique() if str(c).strip()])
         niveis_unicos = sorted([n for n in df_colaboradores['nivel'].dropna().unique() if str(n).strip()])
         
@@ -2063,20 +2090,17 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                 placeholder="Todos os níveis"
             )
         
-        # Sincronizar session_state com filtros
         if filtro_cargo != st.session_state.filtro_cargo_colab:
             st.session_state.filtro_cargo_colab = filtro_cargo
         if filtro_nivel != st.session_state.filtro_nivel_colab:
             st.session_state.filtro_nivel_colab = filtro_nivel
         
-        # Aplicar filtros ao DataFrame
         df_colaboradores_filtrado = df_colaboradores.copy()
         if filtro_cargo:
             df_colaboradores_filtrado = df_colaboradores_filtrado[df_colaboradores_filtrado['cargo'].isin(filtro_cargo)]
         if filtro_nivel:
             df_colaboradores_filtrado = df_colaboradores_filtrado[df_colaboradores_filtrado['nivel'].isin(filtro_nivel)]
         
-        # Mostrar contador de resultados
         if filtro_cargo or filtro_nivel:
             st.info(f"📊 Exibindo **{len(df_colaboradores_filtrado)}** de **{len(df_colaboradores)}** colaboradores (filtros aplicados)")
         
@@ -2113,17 +2137,30 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             if colaborador_selecionado:
                 colaborador_id = int(colaborador_selecionado.split(" - ")[0])
                 colaborador_dados = df_colaboradores_filtrado[df_colaboradores_filtrado['id'] == colaborador_id].iloc[0].to_dict()
-                col_edit, col_del = st.columns(2)
+                col_edit, col_del, col_hist = st.columns(3)
                 with col_edit:
                     if st.button("✏️ Editar Colaborador", width="stretch", key="btn_edit_colab"):
                         st.session_state.colaborador_editando = colaborador_dados; st.session_state.mostrar_form_colaborador = True; st.rerun()
                 with col_del:
                     if st.button("🗑️ Excluir Colaborador", width="stretch", type="secondary", key="btn_del_colab"):
                         st.session_state.mostrar_confirmacao_exclusao = colaborador_id; st.rerun()
+                with col_hist:
+                    if st.button("📜 Visualizar Histórico", width="stretch", type="secondary", key="btn_historico_colab"):
+                        st.session_state.historico_colab_id = colaborador_id
+                        st.session_state.historico_colab_nome = colaborador_dados.get('colaborador_ponto', 'Desconhecido')
+                        st.rerun()
+    
+    # ✅ Abrir modal de histórico se solicitado
+    if st.session_state.get('historico_colab_id'):
+        mostrar_historico_modal(
+            st.session_state.historico_colab_id,
+            st.session_state.historico_colab_nome
+        )
+        st.session_state.historico_colab_id = None
+        st.session_state.historico_colab_nome = None
     
     if st.session_state.get('mostrar_confirmacao_exclusao'):
         col_id = st.session_state.mostrar_confirmacao_exclusao
-        # Buscar dados completos (sem filtro) para a confirmação
         df_todos = df_colaboradores_filtrados if df_colaboradores_filtrados is not None else listar_colaboradores()
         col_nome = df_todos[df_todos['id'] == col_id]['colaborador_ponto'].values[0]
         st.warning(f"⚠️ Você está prestes a excluir o colaborador: **{col_nome}**")
@@ -2135,7 +2172,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                 else: st.error(f"❌ {msg}")
         with col_nao:
             if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_colab"): st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
-    
     if st.session_state.get('mostrar_form_colaborador'):
         st.markdown("---"); st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
         colaborador = st.session_state.colaborador_editando or {}
@@ -2155,7 +2191,7 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             with col3:
                 email = st.text_input("E-mail Corporativo", value=colaborador.get('email', ''))
                 local = st.text_input("Local", value=colaborador.get('local', ''))
-                os_val = st.text_input("O.S", value=colaborador.get('os', ''))
+                os_val = st.text_input("Sistema Operacional", value=colaborador.get('os', ''))
             st.markdown("#### 💼 Dados Profissionais")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -2169,8 +2205,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             with col3:
                 reposicao = st.text_input("Novo Colaborador (Reposição)", value=colaborador.get('reposicao', ''))
                 status = st.selectbox("Status", options=["Ativo", "Inativo", "Bloqueado"], index=["Ativo", "Inativo", "Bloqueado"].index(colaborador.get('status', 'Ativo')) if colaborador.get('status', 'Ativo') in ["Ativo", "Inativo", "Bloqueado"] else 0)
-                
-                # ✅ Validação segura do gestor_id
                 gestor_id = colaborador.get('gestor')
                 gestor_index = 0
                 if gestor_id is not None:
@@ -2180,16 +2214,12 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                             gestor_index = list(gestores_options.keys()).index(gestor_id_int)
                     except (ValueError, TypeError):
                         pass
-                
                 gestor_selecionado = st.selectbox("Gestor", options=list(gestores_options.values()), index=gestor_index)
                 gestor_id_selecionado = [k for k, v in gestores_options.items() if v == gestor_selecionado][0]
-            
             st.markdown("#### 🔗 Links e Aniversário")
             col1, col2, col3 = st.columns(3)
-            with col1:
-                linkedin = st.text_input("LinkedIn", value=colaborador.get('linkedin', ''))
-            with col2:
-                github = st.text_input("GitHub", value=colaborador.get('github', ''))
+            with col1: linkedin = st.text_input("LinkedIn", value=colaborador.get('linkedin', ''))
+            with col2: github = st.text_input("GitHub", value=colaborador.get('github', ''))
             with col3:
                 dia_aniv = st.number_input("Dia do Aniversário", min_value=1, max_value=31, value=int(colaborador.get('dia_aniv') or 1))
                 mes_aniv = st.number_input("Mês do Aniversário", min_value=1, max_value=12, value=int(colaborador.get('mes_aniv') or 1))
@@ -2304,17 +2334,75 @@ def _render_colab_projetos():
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.colab_projeto_editando = None; st.session_state.mostrar_form_colab_projeto = False; st.rerun()
                     else: st.error(f"❌ {msg}")
 
-# =============================================================================
-# ✅ NOVA: Sub-aba "👥 Squads" na aba Colaboradores
-# =============================================================================
+def listar_colab_squad() -> pd.DataFrame:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT cs.id, cs.id_colab, cs.id_squad, cs.created_at,
+                       c.colaborador_ponto AS nome_colaborador,
+                       c.cargo,
+                       s.descricao AS nome_squad,
+                       co.descricao AS nome_coordenadoria
+                FROM colab_squad cs
+                LEFT JOIN colaboradores c ON cs.id_colab = c.id
+                LEFT JOIN squads s ON cs.id_squad = s.id
+                LEFT JOIN coordenadoria_squad csq ON cs.id_squad = csq.id_squad
+                LEFT JOIN coordenadorias co ON csq.id_coordenadoria = co.id
+                ORDER BY c.colaborador_ponto, co.descricao, s.descricao
+            """)
+            rows = cur.fetchall()
+        conn.close(); return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao listar colab_squad: {e}"); return pd.DataFrame()
+
+def criar_colab_squad(id_colab: int, id_squad: int) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM colab_squad WHERE id_colab = %s AND id_squad = %s",
+                (int(id_colab), int(id_squad))
+            )
+            if cur.fetchone():
+                conn.close()
+                return False, "Este colaborador já está associado a este squad."
+            cur.execute(
+                "INSERT INTO colab_squad (id_colab, id_squad) VALUES (%s, %s)",
+                (int(id_colab), int(id_squad))
+            )
+            conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Associação criada com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao criar: {str(e)}"
+
+def deletar_colab_squad(cs_id: int) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM colab_squad WHERE id = %s", (cs_id,)); conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Associação removida com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao deletar: {str(e)}"
+
 def _render_colab_squads():
-    """Renderiza a sub-aba de Squads com filtros de Coordenadoria e Squad."""
     if 'filtro_coord_squad' not in st.session_state: st.session_state.filtro_coord_squad = []
     if 'filtro_squad_colab' not in st.session_state: st.session_state.filtro_squad_colab = []
     if 'mostrar_form_colab_squad' not in st.session_state: st.session_state.mostrar_form_colab_squad = False
     if 'mostrar_confirmacao_exclusao_cs' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_cs = None
     
-    # Carregar opções para os filtros
     coordenadorias_options = listar_coordenadorias_options()
     squads_options = listar_squads_options()
     
@@ -2327,9 +2415,6 @@ def _render_colab_squads():
             st.session_state.mostrar_form_colab_squad = True
             st.rerun()
     
-    # =====================================================================
-    # FILTROS ACIMA DO GRID
-    # =====================================================================
     st.markdown("### 🔍 Filtros")
     col_f1, col_f2 = st.columns(2)
     with col_f1:
@@ -2349,18 +2434,13 @@ def _render_colab_squads():
             placeholder="Todos os squads"
         )
     
-    # Sincronizar session_state com filtros
     if filtro_coord != st.session_state.filtro_coord_squad:
         st.session_state.filtro_coord_squad = filtro_coord
     if filtro_squad != st.session_state.filtro_squad_colab:
         st.session_state.filtro_squad_colab = filtro_squad
     
-    # =====================================================================
-    # BUSCAR E FILTRAR DADOS
-    # =====================================================================
     df_colab_squad = listar_colab_squad()
     
-    # Aplicar filtros
     if filtro_coord:
         df_colab_squad = df_colab_squad[df_colab_squad['nome_coordenadoria'].isin(filtro_coord)]
     if filtro_squad:
@@ -2399,14 +2479,12 @@ def _render_colab_squads():
                     st.session_state.mostrar_confirmacao_exclusao_cs = cs_id
                     st.rerun()
     
-    # Confirmação de exclusão
     if st.session_state.get('mostrar_confirmacao_exclusao_cs'):
         cs_id = st.session_state.mostrar_confirmacao_exclusao_cs
         cs_row = df_colab_squad[df_colab_squad['id'] == cs_id]
         if not cs_row.empty:
             cs_nome = f"{cs_row.iloc[0]['nome_colaborador']} → {cs_row.iloc[0]['nome_squad']}"
             st.warning(f"⚠️ Você está prestes a excluir a associação: **{cs_nome}**")
-            st.info("Esta ação não pode ser desfeita!")
             col_sim, col_nao = st.columns(2)
             with col_sim:
                 if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_excluir_colab_squad"):
@@ -2422,7 +2500,6 @@ def _render_colab_squads():
                     st.session_state.mostrar_confirmacao_exclusao_cs = None
                     st.rerun()
     
-    # Formulário de criação
     if st.session_state.get('mostrar_form_colab_squad'):
         st.markdown("---")
         st.subheader("📝 Nova Associação Colaborador-Squad")
@@ -2430,28 +2507,26 @@ def _render_colab_squads():
         colaboradores_options = listar_colaboradores_options()
         
         if not colaboradores_options:
-            st.error("⚠️ Nenhum colaborador ativo cadastrado. Cadastre um colaborador primeiro na aba **Informações**.")
-            return
+            st.error("⚠️ Nenhum colaborador ativo cadastrado."); return
         if not squads_options:
-            st.error("⚠️ Nenhum squad ativo cadastrado. Cadastre um squad primeiro na aba **Squads** de Estruturação.")
-            return
+            st.error("⚠️ Nenhum squad ativo cadastrado."); return
         
         with st.form("form_colab_squad"):
             st.markdown("#### 🔗 Associação")
             col1, col2 = st.columns(2)
             with col1:
                 colab_options_dict = {c['id']: f"{c['colaborador_ponto']} ({c['cargo']})" for c in colaboradores_options}
-                colab_labels = list(colab_options_dict.values())
+                colab_labels_form = list(colab_options_dict.values())
                 colab_ids = list(colab_options_dict.keys())
-                colab_selecionado_label = st.selectbox("Colaborador *", options=colab_labels, index=0)
-                colab_selecionado_id = colab_ids[colab_labels.index(colab_selecionado_label)]
+                colab_selecionado_label = st.selectbox("Colaborador *", options=colab_labels_form, index=0)
+                colab_selecionado_id = colab_ids[colab_labels_form.index(colab_selecionado_label)]
             
             with col2:
                 squad_options_dict = {s['id']: s['descricao'] for s in squads_options}
-                squad_labels = list(squad_options_dict.values())
+                squad_labels_form = list(squad_options_dict.values())
                 squad_ids = list(squad_options_dict.keys())
-                squad_selecionado_label = st.selectbox("Squad *", options=squad_labels, index=0)
-                squad_selecionado_id = squad_ids[squad_labels.index(squad_selecionado_label)]
+                squad_selecionado_label = st.selectbox("Squad *", options=squad_labels_form, index=0)
+                squad_selecionado_id = squad_ids[squad_labels_form.index(squad_selecionado_label)]
             
             st.markdown("---")
             col_submit, col_cancel = st.columns(2)
@@ -2941,6 +3016,8 @@ def main():
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
     if 'login_view' not in st.session_state: st.session_state.login_view = "login"
     if 'show_perfil' not in st.session_state: st.session_state.show_perfil = False
+    if 'historico_colab_id' not in st.session_state: st.session_state.historico_colab_id = None
+    if 'historico_colab_nome' not in st.session_state: st.session_state.historico_colab_nome = None
     if not st.session_state.logged_in: render_login_screen(); return
     st.set_page_config(page_title="Dashboard de Entregas - SME Spassu", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
     st.sidebar.markdown("---")
@@ -2960,7 +3037,6 @@ def main():
     if st.sidebar.button("🔄 Atualizar Dados", width="stretch", type="primary", help="Recarrega todos os dados do Azure DevOps e banco de dados", key="btn_atualizar_dados"):
         st.cache_data.clear(); st.cache_resource.clear(); st.session_state.periodo_anterior = None; st.rerun()
     
-    # Filtro de Gestor na Sidebar (apenas nomes)
     gestores_lista = listar_gestores_filtro()
     gestores_nomes = [g['nome'] for g in gestores_lista]
     gestor_nome_para_id = {g['nome']: g['id'] for g in gestores_lista}
@@ -3040,7 +3116,6 @@ def main():
                 for item_id, item in items.items():
                     all_workitems[item_id] = item; project_of_item[item_id] = proj
     
-    # Carregar colaboradores e aplicar filtro de gestor
     df_colaboradores = listar_colaboradores()
     
     if gestores_selecionados_ids:
