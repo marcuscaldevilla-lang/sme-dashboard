@@ -215,8 +215,8 @@ def get_colaboradores_from_db() -> pd.DataFrame:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, colaborador_azure, colaborador_ponto, cargo, nivel,
-                data_inicio, email, promocao, reposicao, data_saida, status
+                SELECT c.id, c.colaborador_azure, c.colaborador_ponto, c.cargo, c.nivel,
+                c.data_inicio, c.email, c.promocao, c.reposicao, c.data_saida, c.status
                 FROM colaboradores ORDER BY colaborador_ponto
             """)
             rows = cur.fetchall()
@@ -429,20 +429,111 @@ def deletar_usuario(usuario_id: int, tipo_usuario_logado: str) -> Tuple[bool, st
         if conn: conn.rollback(); conn.close()
         return False, f"Erro ao deletar: {str(e)}"
 
+# =============================================================================
+# 🆕 FUNÇÕES PARA GERENCIAMENTO DE CARGOS
+# =============================================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def listar_cargos() -> pd.DataFrame:
+    """Lista todos os cargos cadastrados."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, descricao FROM cargos ORDER BY descricao")
+            rows = cur.fetchall()
+        conn.close(); return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao listar cargos: {e}"); return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def listar_cargos_options() -> List[Dict]:
+    """Lista cargos para combobox."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return []
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, descricao FROM cargos ORDER BY descricao")
+            rows = cur.fetchall()
+        conn.close(); return rows
+    except Exception as e:
+        logger.error(f"Erro ao buscar cargos options: {e}"); return []
+
+def criar_cargo(descricao: str) -> Tuple[bool, str]:
+    """Cria um novo cargo."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM cargos WHERE descricao = %s", (descricao.strip(),))
+            if cur.fetchone(): conn.close(); return False, "Já existe um cargo com esta descrição."
+            cur.execute("INSERT INTO cargos (descricao) VALUES (%s) RETURNING id", (descricao.strip(),))
+            novo_id = cur.fetchone()['id']
+            conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, f"Cargo criado com sucesso! ID: {novo_id}"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao criar cargo: {str(e)}"
+
+def atualizar_cargo(cargo_id: int, descricao: str) -> Tuple[bool, str]:
+    """Atualiza um cargo existente."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM cargos WHERE descricao = %s AND id != %s", (descricao.strip(), cargo_id))
+            if cur.fetchone(): conn.close(); return False, "Já existe outro cargo com esta descrição."
+            cur.execute("UPDATE cargos SET descricao = %s WHERE id = %s", (descricao.strip(), cargo_id))
+            conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Cargo atualizado com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao atualizar cargo: {str(e)}"
+
+def deletar_cargo(cargo_id: int) -> Tuple[bool, str]:
+    """Remove um cargo."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) as total FROM colaboradores WHERE cargo = %s", (cargo_id,))
+            if cur.fetchone()['total'] > 0:
+                conn.close()
+                return False, "Não é possível excluir: existem colaboradores vinculados a este cargo."
+            cur.execute("DELETE FROM cargos WHERE id = %s", (cargo_id,)); conn.commit()
+        conn.close(); st.cache_data.clear()
+        return True, "Cargo removido com sucesso!"
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return False, f"Erro ao deletar cargo: {str(e)}"
+
 @st.cache_data(ttl=120, show_spinner=False)
 def listar_colaboradores() -> pd.DataFrame:
+    """Lista colaboradores com JOIN na tabela cargos para obter a descrição."""
     db_url = os.getenv("NEON_DATABASE_URL")
     if not db_url: return pd.DataFrame()
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT c.id, c.colaborador_azure, c.colaborador_ponto, c.cargo, c.nivel,
-                       c.data_inicio, c.email, c.promocao, c.reposicao, c.data_saida, c.status,
-                       c.gestor, c.email_pessoal, c.cpf, c.telefone, c.local,
-                       c.linkedin, c.github, c.os, c.dt_nascimento, c.dia_aniv, c.mes_aniv, c.tecnologia,
+                SELECT c.id, c.colaborador_azure, c.colaborador_ponto, 
+                       c.cargo AS cargo_id, car.descricao AS cargo,
+                       c.nivel, c.data_inicio, c.email, c.promocao, c.reposicao, 
+                       c.data_saida, c.status, c.gestor, c.email_pessoal, c.cpf, 
+                       c.telefone, c.local, c.linkedin, c.github, c.os, 
+                       c.dt_nascimento, c.dia_aniv, c.mes_aniv, c.tecnologia,
                        u.nome AS nome_gestor
                 FROM colaboradores c
+                LEFT JOIN cargos car ON c.cargo = car.id
                 LEFT JOIN usuarios u ON c.gestor = u.id
                 ORDER BY c.colaborador_ponto
             """)
@@ -481,7 +572,8 @@ def criar_colaborador(dados: Dict) -> Tuple[bool, str]:
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 dados.get('colaborador_azure', '').strip(), dados.get('colaborador_ponto', '').strip(),
-                dados.get('cargo', '').strip(), dados.get('nivel', '').strip(),
+                int(dados['cargo']) if dados.get('cargo') else None,
+                dados.get('nivel', '').strip(),
                 dados.get('data_inicio') if dados.get('data_inicio') else None,
                 dados.get('email', '').strip(),
                 dados.get('promocao') if dados.get('promocao') else None,
@@ -520,7 +612,8 @@ def atualizar_colaborador(colaborador_id: int, dados: Dict) -> Tuple[bool, str]:
                 WHERE id = %s
             """, (
                 dados.get('colaborador_azure', '').strip(), dados.get('colaborador_ponto', '').strip(),
-                dados.get('cargo', '').strip(), dados.get('nivel', '').strip(),
+                int(dados['cargo']) if dados.get('cargo') else None,
+                dados.get('nivel', '').strip(),
                 dados.get('data_inicio') if dados.get('data_inicio') else None,
                 dados.get('email', '').strip(),
                 dados.get('promocao') if dados.get('promocao') else None,
@@ -562,19 +655,16 @@ def deletar_colaborador(colaborador_id: int) -> Tuple[bool, str]:
 # =============================================================================
 # 🆕 HISTÓRICO DE ALTERAÇÕES DE COLABORADORES
 # =============================================================================
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def buscar_historico_colaborador(id_colaborador: int) -> pd.DataFrame:
     """Busca todas as alterações registradas para um colaborador."""
     db_url = os.getenv("NEON_DATABASE_URL")
-    if not db_url:
-        logger.error("❌ NEON_DATABASE_URL não configurado")
-        return pd.DataFrame()
+    if not db_url: return pd.DataFrame()
     
     conn = None
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # ✅ Query corrigida com o nome real da coluna: alterado_em
             cur.execute("""
                 SELECT cla.id, 
                        cla.id_colaborador, 
@@ -589,25 +679,17 @@ def buscar_historico_colaborador(id_colaborador: int) -> pd.DataFrame:
                 ORDER BY cla.alterado_em DESC
             """, (id_colaborador,))
             rows = cur.fetchall()
-            
-            logger.info(f"✅ {len(rows)} registro(s) de histórico encontrados para colaborador ID={id_colaborador}")
-            
         conn.close()
         
-        if not rows:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(rows)
-        
-        # Formatar a coluna de data para exibição
-        if 'data_alteracao' in df.columns:
-            df['data_alteracao'] = pd.to_datetime(df['data_alteracao'], errors='coerce').dt.strftime('%d/%m/%Y %H:%M:%S')
-        
-        return df
+        if rows:
+            df = pd.DataFrame(rows)
+            if 'data_alteracao' in df.columns:
+                df['data_alteracao'] = pd.to_datetime(df['data_alteracao'], errors='coerce').dt.strftime('%d/%m/%Y %H:%M')
+            return df
+        return pd.DataFrame()
         
     except psycopg2.Error as e:
         logger.error(f"❌ Erro PostgreSQL ao buscar histórico: {e}")
-        logger.error(f"   SQL State: {getattr(e, 'pgcode', 'N/A')}")
         if conn: conn.close()
         return pd.DataFrame()
     except Exception as e:
@@ -632,13 +714,8 @@ def mostrar_historico_modal(id_colaborador: int, nome_colaborador: str):
         st.success(f"📊 **{len(df_historico)}** alteração(ões) encontrada(s)")
         st.markdown("---")
         
-        # ✅ Colunas desejadas na ordem de exibição
-        colunas_desejadas = ['id', 'campo_alterado', 'valor_anterior', 'valor_novo', 'data_alteracao', 'usuario_alteracao']
-        
-        # ✅ Filtrar apenas colunas que realmente existem no DataFrame
+        colunas_desejadas = ['id', 'campo_alterado', 'valor_anterior', 'valor_novo', 'data_alteracao']
         colunas_existentes = [col for col in colunas_desejadas if col in df_historico.columns]
-        
-        # ✅ Adicionar colunas extras que existam no DataFrame mas não estavam na lista
         colunas_extra = [col for col in df_historico.columns if col not in colunas_desejadas and col != 'nome_colaborador']
         colunas_exibicao = colunas_existentes + colunas_extra
         
@@ -651,9 +728,7 @@ def mostrar_historico_modal(id_colaborador: int, nome_colaborador: str):
                 "campo_alterado": st.column_config.TextColumn("Campo Alterado", width="medium"),
                 "valor_anterior": st.column_config.TextColumn("Valor Anterior", width="large"),
                 "valor_novo": st.column_config.TextColumn("Valor Novo", width="large"),
-                "data_alteracao": st.column_config.TextColumn("Data/Hora", width="medium"),
-                "usuario_alteracao": st.column_config.TextColumn("Usuário", width="medium"),
-                "nome_colaborador": st.column_config.TextColumn("Colaborador", width="large")
+                "data_alteracao": st.column_config.TextColumn("Data/Hora", width="medium")
             }
         )
     
@@ -748,9 +823,12 @@ def listar_colab_projetos() -> pd.DataFrame:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT cp.id, cp.id_colab, cp.id_projeto, cp.created_at,
-                       c.colaborador_ponto AS nome_colaborador, c.cargo, p.name AS nome_projeto
+                       c.colaborador_ponto AS nome_colaborador, 
+                       car.descricao AS cargo, 
+                       p.name AS nome_projeto
                 FROM colab_projetos cp
                 LEFT JOIN colaboradores c ON cp.id_colab = c.id
+                LEFT JOIN cargos car ON c.cargo = car.id
                 LEFT JOIN devops_projects p ON cp.id_projeto = p.id
                 ORDER BY c.colaborador_ponto, p.name
             """)
@@ -766,7 +844,13 @@ def listar_colaboradores_options() -> List[Dict]:
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, colaborador_ponto, cargo FROM colaboradores WHERE status = 'Ativo' ORDER BY colaborador_ponto")
+            cur.execute("""
+                SELECT c.id, c.colaborador_ponto, car.descricao AS cargo 
+                FROM colaboradores c
+                LEFT JOIN cargos car ON c.cargo = car.id
+                WHERE c.status = 'Ativo' 
+                ORDER BY c.colaborador_ponto
+            """)
             rows = cur.fetchall()
         conn.close(); return rows
     except Exception as e:
@@ -2066,7 +2150,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
     if df_colaboradores.empty:
         st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
     else:
-        # 🔍 FILTROS DE CARGO E NÍVEL
         st.markdown("### 🔍 Filtros")
         
         cargos_unicos = sorted([c for c in df_colaboradores['cargo'].dropna().unique() if str(c).strip()])
@@ -2150,7 +2233,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                         st.session_state.historico_colab_nome = colaborador_dados.get('colaborador_ponto', 'Desconhecido')
                         st.rerun()
     
-    # ✅ Abrir modal de histórico se solicitado
     if st.session_state.get('historico_colab_id'):
         mostrar_historico_modal(
             st.session_state.historico_colab_id,
@@ -2176,7 +2258,9 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
         st.markdown("---"); st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
         colaborador = st.session_state.colaborador_editando or {}
         gestores = listar_gestores()
+        cargos_options = listar_cargos_options()
         gestores_options = {g['id']: g['nome'] for g in gestores}; gestores_options[0] = "-- Sem gestor --"
+        
         with st.form("form_colaborador"):
             st.markdown("#### 👤 Dados Pessoais")
             col1, col2, col3 = st.columns(3)
@@ -2195,7 +2279,23 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             st.markdown("#### 💼 Dados Profissionais")
             col1, col2, col3 = st.columns(3)
             with col1:
-                cargo = st.text_input("Cargo *", value=colaborador.get('cargo', ''))
+                # ✅ COMBOBOX DE CARGO
+                if cargos_options:
+                    cargo_options_dict = {c['id']: c['descricao'] for c in cargos_options}
+                    cargo_labels = list(cargo_options_dict.values())
+                    cargo_ids = list(cargo_options_dict.keys())
+                    
+                    cargo_atual = colaborador.get('cargo_id')
+                    cargo_index = 0
+                    if cargo_atual and int(cargo_atual) in cargo_ids:
+                        cargo_index = cargo_ids.index(int(cargo_atual))
+                    
+                    cargo_selecionado_label = st.selectbox("Cargo *", options=cargo_labels, index=cargo_index)
+                    cargo_selecionado_id = cargo_ids[cargo_labels.index(cargo_selecionado_label)]
+                else:
+                    st.error("⚠️ Nenhum cargo cadastrado. Cadastre cargos primeiro.")
+                    cargo_selecionado_id = None
+                
                 nivel = st.selectbox("Nível *", options=["", "Senior", "Pleno", "Junior", "Portfólio"], index=["", "Senior", "Pleno", "Junior", "Portfólio"].index(colaborador.get('nivel', '')) if colaborador.get('nivel', '') in ["", "Senior", "Pleno", "Junior", "Portfólio"] else 0)
                 tecnologia = st.text_input("Tecnologia Principal", value=colaborador.get('tecnologia', ''))
             with col2:
@@ -2232,13 +2332,13 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                 erros = []
                 if not colaborador_azure.strip(): erros.append("Nome no Azure DevOps é obrigatório")
                 if not colaborador_ponto.strip(): erros.append("Nome no Ponto é obrigatório")
-                if not cargo.strip(): erros.append("Cargo é obrigatório")
+                if not cargo_selecionado_id: erros.append("Cargo é obrigatório")
                 if not nivel: erros.append("Nível é obrigatório")
                 if not data_inicio: erros.append("Data de Início é obrigatória")
                 if erros:
                     for erro in erros: st.error(f"⚠️ {erro}")
                 else:
-                    dados = {'colaborador_azure': colaborador_azure, 'colaborador_ponto': colaborador_ponto, 'cargo': cargo, 'nivel': nivel, 'data_inicio': data_inicio if data_inicio else None, 'email': email, 'promocao': promocao if promocao else None, 'reposicao': reposicao, 'data_saida': data_saida if data_saida else None, 'status': status, 'gestor': gestor_id_selecionado, 'email_pessoal': email_pessoal, 'cpf': cpf, 'telefone': telefone, 'local': local, 'linkedin': linkedin, 'github': github, 'os': os_val, 'dt_nascimento': dt_nascimento if dt_nascimento else None, 'dia_aniv': dia_aniv, 'mes_aniv': mes_aniv, 'tecnologia': tecnologia}
+                    dados = {'colaborador_azure': colaborador_azure, 'colaborador_ponto': colaborador_ponto, 'cargo': cargo_selecionado_id, 'nivel': nivel, 'data_inicio': data_inicio if data_inicio else None, 'email': email, 'promocao': promocao if promocao else None, 'reposicao': reposicao, 'data_saida': data_saida if data_saida else None, 'status': status, 'gestor': gestor_id_selecionado, 'email_pessoal': email_pessoal, 'cpf': cpf, 'telefone': telefone, 'local': local, 'linkedin': linkedin, 'github': github, 'os': os_val, 'dt_nascimento': dt_nascimento if dt_nascimento else None, 'dia_aniv': dia_aniv, 'mes_aniv': mes_aniv, 'tecnologia': tecnologia}
                     if st.session_state.colaborador_editando: sucesso, msg = atualizar_colaborador(st.session_state.colaborador_editando['id'], dados)
                     else: sucesso, msg = criar_colaborador(dados)
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.colaborador_editando = None; st.session_state.mostrar_form_colaborador = False; st.rerun()
@@ -2343,11 +2443,12 @@ def listar_colab_squad() -> pd.DataFrame:
             cur.execute("""
                 SELECT cs.id, cs.id_colab, cs.id_squad, cs.created_at,
                        c.colaborador_ponto AS nome_colaborador,
-                       c.cargo,
+                       car.descricao AS cargo,
                        s.descricao AS nome_squad,
                        co.descricao AS nome_coordenadoria
                 FROM colab_squad cs
                 LEFT JOIN colaboradores c ON cs.id_colab = c.id
+                LEFT JOIN cargos car ON c.cargo = car.id
                 LEFT JOIN squads s ON cs.id_squad = s.id
                 LEFT JOIN coordenadoria_squad csq ON cs.id_squad = csq.id_squad
                 LEFT JOIN coordenadorias co ON csq.id_coordenadoria = co.id
