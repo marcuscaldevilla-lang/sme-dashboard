@@ -483,6 +483,28 @@ def listar_colaboradores() -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Erro ao listar colaboradores: {e}"); return pd.DataFrame()
 
+@st.cache_data(ttl=120, show_spinner=False)
+def buscar_distribuicao_squad() -> pd.DataFrame:
+    """Busca distribuição de colaboradores por squad."""
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url: return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT s.descricao AS squad, COUNT(DISTINCT cs.id_colab) AS total
+                FROM colab_squad cs
+                LEFT JOIN squads s ON cs.id_squad = s.id
+                LEFT JOIN colaboradores c ON cs.id_colab = c.id
+                WHERE c.status = 'Ativo'
+                GROUP BY s.descricao
+                ORDER BY total DESC
+            """)
+            rows = cur.fetchall()
+        conn.close(); return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao buscar distribuição por squad: {e}"); return pd.DataFrame()
+
 @st.cache_data(ttl=300, show_spinner=False)
 def listar_gestores() -> List[Dict]:
     db_url = os.getenv("NEON_DATABASE_URL")
@@ -2165,6 +2187,9 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
     if df_colaboradores.empty:
         st.warning("⚠️ Nenhum colaborador cadastrado. Clique em **➕ Novo Colaborador** para começar.")
     else:
+        # =====================================================================
+        # 🔍 FILTROS DE CARGO E NÍVEL
+        # =====================================================================
         st.markdown("### 🔍 Filtros")
         cargos_unicos = sorted([c for c in df_colaboradores['cargo'].dropna().unique() if str(c).strip()])
         niveis_unicos = sorted([n for n in df_colaboradores['nivel'].dropna().unique() if str(n).strip()])
@@ -2180,6 +2205,148 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
         if filtro_nivel: df_colaboradores_filtrado = df_colaboradores_filtrado[df_colaboradores_filtrado['nivel'].isin(filtro_nivel)]
         if filtro_cargo or filtro_nivel:
             st.info(f"📊 Exibindo **{len(df_colaboradores_filtrado)}** de **{len(df_colaboradores)}** colaboradores (filtros aplicados)")
+        
+        # =====================================================================
+        # 📊 INDICADORES: TOTAIS GERAIS
+        # =====================================================================
+        st.markdown("### 📊 Indicadores Gerais")
+        total_colaboradores = len(df_colaboradores_filtrado)
+        total_ativos = len(df_colaboradores_filtrado[df_colaboradores_filtrado['status'] == 'Ativo']) if 'status' in df_colaboradores_filtrado.columns else total_colaboradores
+        total_inativos = total_colaboradores - total_ativos
+        
+        col_ind1, col_ind2, col_ind3 = st.columns(3)
+        with col_ind1:
+            st.metric(label="👥 Total de Colaboradores", value=total_colaboradores)
+        with col_ind2:
+            st.metric(label="✅ Ativos", value=total_ativos, delta=f"{(total_ativos/total_colaboradores*100) if total_colaboradores > 0 else 0:.1f}%")
+        with col_ind3:
+            st.metric(label="⛔ Inativos", value=total_inativos, delta=f"-{(total_inativos/total_colaboradores*100) if total_colaboradores > 0 else 0:.1f}%", delta_color="inverse")
+        
+        st.markdown("---")
+        
+        # =====================================================================
+        # 📊 INDICADORES: POR EQUIPE (GESTOR)
+        # =====================================================================
+        st.markdown("### 👔 Distribuição por Equipe (Gestor)")
+        
+        if 'nome_gestor' in df_colaboradores_filtrado.columns:
+            df_por_gestor = df_colaboradores_filtrado[df_colaboradores_filtrado['status'] == 'Ativo'].groupby('nome_gestor').size().reset_index(name='total')
+            df_por_gestor = df_por_gestor.sort_values('total', ascending=False)
+            
+            if df_por_gestor.empty:
+                st.info("📭 Nenhum colaborador ativo com gestor definido.")
+            else:
+                # Cards de gestores
+                num_cols = min(4, len(df_por_gestor))
+                cols_gestor = st.columns(num_cols)
+                for idx, (_, row) in enumerate(df_por_gestor.iterrows()):
+                    with cols_gestor[idx % num_cols]:
+                        st.metric(
+                            label=f"👤 {row['nome_gestor'] if pd.notna(row['nome_gestor']) else 'Sem Gestor'}",
+                            value=f"{row['total']} colab.",
+                            help=f"Total de colaboradores ativos sob gestão de {row['nome_gestor'] if pd.notna(row['nome_gestor']) else 'Sem Gestor'}"
+                        )
+                
+                # Gráfico de barras
+                fig_gestor = px.bar(
+                    df_por_gestor, 
+                    x='nome_gestor', 
+                    y='total',
+                    text='total',
+                    color='total',
+                    color_continuous_scale='Blues',
+                    labels={'nome_gestor': 'Gestor', 'total': 'Qtd Colaboradores'},
+                    title='Colaboradores por Equipe'
+                )
+                fig_gestor.update_traces(textposition='outside')
+                fig_gestor.update_layout(margin=dict(t=40, b=80, l=20, r=20), height=350, xaxis_tickangle=-45, showlegend=False)
+                st.plotly_chart(fig_gestor, width="stretch")
+        else:
+            st.warning("⚠️ Coluna 'nome_gestor' não disponível.")
+        
+        st.markdown("---")
+        
+        # =====================================================================
+        # 📊 INDICADORES: POR SQUAD
+        # =====================================================================
+        st.markdown("### 👥 Distribuição por Squad")
+        
+        df_squad = buscar_distribuicao_squad()
+        
+        if df_squad.empty:
+            st.info("📭 Nenhuma associação colaborador-squad encontrada.")
+        else:
+            # Filtrar squads que têm colaboradores ativos no filtro atual
+            ids_colab_filtrados = set(df_colaboradores_filtrado[df_colaboradores_filtrado['status'] == 'Ativo']['id'].tolist()) if 'status' in df_colaboradores_filtrado.columns else set(df_colaboradores_filtrado['id'].tolist())
+            
+            # Cards de squads
+            num_cols_squad = min(4, len(df_squad))
+            cols_squad = st.columns(num_cols_squad)
+            for idx, (_, row) in enumerate(df_squad.iterrows()):
+                with cols_squad[idx % num_cols_squad]:
+                    st.metric(
+                        label=f"🏃 {row['squad'] if pd.notna(row['squad']) else 'Sem Squad'}",
+                        value=f"{row['total']} colab.",
+                        help=f"Total de colaboradores ativos no squad {row['squad'] if pd.notna(row['squad']) else 'Sem Squad'}"
+                    )
+            
+            # Gráfico de barras
+            fig_squad = px.bar(
+                df_squad,
+                x='squad',
+                y='total',
+                text='total',
+                color='total',
+                color_continuous_scale='Oranges',
+                labels={'squad': 'Squad', 'total': 'Qtd Colaboradores'},
+                title='Colaboradores por Squad'
+            )
+            fig_squad.update_traces(textposition='outside')
+            fig_squad.update_layout(margin=dict(t=40, b=80, l=20, r=20), height=350, xaxis_tickangle=-45, showlegend=False)
+            st.plotly_chart(fig_squad, width="stretch")
+        
+        st.markdown("---")
+        
+        # =====================================================================
+        # 📊 INDICADORES: POR CARGO
+        # =====================================================================
+        st.markdown("### 💼 Distribuição por Cargo")
+        
+        df_por_cargo = df_colaboradores_filtrado[df_colaboradores_filtrado['status'] == 'Ativo'].groupby('cargo').size().reset_index(name='total') if 'status' in df_colaboradores_filtrado.columns else df_colaboradores_filtrado.groupby('cargo').size().reset_index(name='total')
+        df_por_cargo = df_por_cargo.sort_values('total', ascending=False)
+        
+        if df_por_cargo.empty:
+            st.info("📭 Nenhum colaborador ativo com cargo definido.")
+        else:
+            # Cards de cargos
+            num_cols_cargo = min(4, len(df_por_cargo))
+            cols_cargo = st.columns(num_cols_cargo)
+            for idx, (_, row) in enumerate(df_por_cargo.iterrows()):
+                with cols_cargo[idx % num_cols_cargo]:
+                    st.metric(
+                        label=f"🎯 {row['cargo'] if pd.notna(row['cargo']) else 'Sem Cargo'}",
+                        value=f"{row['total']} colab.",
+                        help=f"Total de colaboradores ativos com cargo {row['cargo'] if pd.notna(row['cargo']) else 'Sem Cargo'}"
+                    )
+            
+            # Gráfico de pizza
+            fig_cargo = px.pie(
+                df_por_cargo,
+                values='total',
+                names='cargo',
+                title='Distribuição por Cargo',
+                color_discrete_sequence=px.colors.qualitative.Set2,
+                hole=0.4
+            )
+            fig_cargo.update_traces(textposition='inside', textinfo='percent+label+value')
+            fig_cargo.update_layout(margin=dict(t=40, b=20, l=20, r=20), height=400)
+            st.plotly_chart(fig_cargo, width="stretch")
+        
+        st.markdown("---")
+        
+        # =====================================================================
+        # 📋 GRID DE COLABORADORES
+        # =====================================================================
         if df_colaboradores_filtrado.empty:
             st.warning("⚠️ Nenhum colaborador encontrado com os filtros selecionados.")
         else:
@@ -2244,7 +2411,6 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
                 else: st.error(f"❌ {msg}")
         with col_nao:
             if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_excluir_colab"): st.session_state.mostrar_confirmacao_exclusao = None; st.rerun()
-    
     if st.session_state.get('mostrar_form_colaborador'):
         st.markdown("---"); st.subheader("📝 " + ("Editar Colaborador" if st.session_state.colaborador_editando else "Novo Colaborador"))
         colaborador = st.session_state.colaborador_editando or {}
