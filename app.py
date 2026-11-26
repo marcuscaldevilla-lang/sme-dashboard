@@ -1113,6 +1113,143 @@ def buscar_distribuicao_squad() -> pd.DataFrame:
         logger.error(f"Erro ao buscar distribuição por squad: {e}"); return pd.DataFrame()
 
 # =============================================================================
+# REUNIÕES 1:1
+# =============================================================================
+@st.cache_data(ttl=120, show_spinner=False)
+def listar_reunioes_11() -> pd.DataFrame:
+    """
+    Busca todas as reuniões 1:1 com:
+    - Colaborador (colaborador_ponto da tabela colaboradores)
+    - Gestor (nome da tabela usuarios)
+    - Squads (descricao da tabela squads agregadas por vírgula via colab_squad)
+    - data_reuniao, Info_Senior, Realizada da tabela colab_reuniao11
+    """
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return pd.DataFrame()
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT 
+                    r.id,
+                    r.id_colab,
+                    c.colaborador_ponto AS colaborador,
+                    u.nome AS gestor,
+                    COALESCE(
+                        STRING_AGG(DISTINCT s.descricao, ', ' ORDER BY s.descricao), 
+                        '-'
+                    ) AS squads,
+                    r.data_reuniao,
+                    COALESCE(r."Info_Senior", false) AS "Info_Senior",
+                    COALESCE(r."Realizada", false) AS "Realizada",
+                    r."Observacao" AS observacao,
+                    r.created_at
+                FROM colab_reuniao11 r
+                INNER JOIN colaboradores c ON r.id_colab = c.id
+                LEFT JOIN usuarios u ON c.gestor = u.id
+                LEFT JOIN colab_squad cs ON c.id = cs.id_colab
+                LEFT JOIN squads s ON cs.id_squad = s.id
+                GROUP BY 
+                    r.id, 
+                    r.id_colab, 
+                    c.colaborador_ponto, 
+                    u.nome, 
+                    r.data_reuniao, 
+                    r."Info_Senior", 
+                    r."Realizada", 
+                    r."Observacao", 
+                    r.created_at
+                ORDER BY r.data_reuniao DESC, c.colaborador_ponto ASC
+            """)
+            rows = cur.fetchall()
+        conn.close()
+        return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error(f"Erro ao listar reuniões 1:1: {e}")
+        return pd.DataFrame()
+
+
+def criar_reuniao_11(id_colab: int, data_reuniao, info_senior: bool = False, realizada: bool = False, observacao: str = "") -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO colab_reuniao11 (id_colab, data_reuniao, "Info_Senior", "Realizada", "Observacao")
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                int(id_colab),
+                data_reuniao,
+                bool(info_senior),
+                bool(realizada),
+                observacao.strip() if observacao else None
+            ))
+            conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True, "Reunião 1:1 registrada com sucesso!"
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return False, f"Erro ao criar reunião 1:1: {str(e)}"
+
+
+def atualizar_reuniao_11(reuniao_id: int, id_colab: int, data_reuniao, info_senior: bool, realizada: bool, observacao: str = "") -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE colab_reuniao11
+                SET id_colab = %s, data_reuniao = %s, "Info_Senior" = %s, "Realizada" = %s, "Observacao" = %s
+                WHERE id = %s
+            """, (
+                int(id_colab),
+                data_reuniao,
+                bool(info_senior),
+                bool(realizada),
+                observacao.strip() if observacao else None,
+                int(reuniao_id)
+            ))
+            conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True, "Reunião 1:1 atualizada com sucesso!"
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return False, f"Erro ao atualizar reunião 1:1: {str(e)}"
+
+
+def deletar_reuniao_11(reuniao_id: int) -> Tuple[bool, str]:
+    db_url = os.getenv("NEON_DATABASE_URL")
+    if not db_url:
+        return False, "Banco de dados não configurado."
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM colab_reuniao11 WHERE id = %s", (int(reuniao_id),))
+            conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True, "Reunião 1:1 excluída com sucesso!"
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return False, f"Erro ao excluir reunião 1:1: {str(e)}"
+
+# =============================================================================
 # SQUADS
 # =============================================================================
 def listar_squads() -> pd.DataFrame:
@@ -2178,12 +2315,15 @@ def render_colaboradores_tab(df_colaboradores_filtrados=None):
         st.error("🚫 Acesso negado. Apenas Administradores e Gestores podem acessar esta funcionalidade.")
         st.stop()
     st.subheader("⚙️ Gerenciamento de Colaboradores")
-    sub_tab_info, sub_tab_projetos, sub_tab_squads = st.tabs([
-        "👤 Informações", "🔗 Projetos", "👥 Squads"
+    
+    # 4 Sub-abas: Informações, Projetos, Squads e a nova Reuniões 1:1
+    sub_tab_info, sub_tab_projetos, sub_tab_squads, sub_tab_reuniao = st.tabs([
+        "👤 Informações", "🔗 Projetos", "👥 Squads", "🤝 Reuniões 1:1"
     ])
     with sub_tab_info: _render_colaboradores_info(df_colaboradores_filtrados)
     with sub_tab_projetos: _render_colab_projetos()
     with sub_tab_squads: _render_colab_squads()
+    with sub_tab_reuniao: _render_reunioes_11(df_colaboradores_filtrados)
 
 def _render_colaboradores_info(df_colaboradores_filtrados=None):
     if 'colaborador_editando' not in st.session_state: st.session_state.colaborador_editando = None
@@ -2680,6 +2820,245 @@ def _render_colab_squads():
                     sucesso, msg = criar_colab_squad(colab_selecionado_id, squad_selecionado_id)
                     if sucesso: st.success(f"✅ {msg}"); st.session_state.mostrar_form_colab_squad = False; st.rerun()
                     else: st.error(f"❌ {msg}")
+
+def _render_reunioes_11(df_colaboradores_filtrados=None):
+    if 'reuniao_editando' not in st.session_state: st.session_state.reuniao_editando = None
+    if 'mostrar_form_reuniao' not in st.session_state: st.session_state.mostrar_form_reuniao = False
+    if 'mostrar_confirmacao_exclusao_reuniao' not in st.session_state: st.session_state.mostrar_confirmacao_exclusao_reuniao = None
+
+    col_btn1, col_btn2 = st.columns([3, 1])
+    with col_btn2:
+        if st.button("➕ Nova Reunião 1:1", width="stretch", type="primary", key="btn_nova_reuniao_11"):
+            st.session_state.reuniao_editando = None
+            st.session_state.mostrar_form_reuniao = True
+            st.rerun()
+
+    df_reunioes = listar_reunioes_11()
+
+    # Filtro cascata conforme gestores selecionados na sidebar
+    if df_colaboradores_filtrados is not None and not df_colaboradores_filtrados.empty and not df_reunioes.empty:
+        colabs_permitidos_ids = set(df_colaboradores_filtrados['id'].tolist())
+        df_reunioes = df_reunioes[df_reunioes['id_colab'].isin(colabs_permitidos_ids)].copy()
+
+    if df_reunioes.empty:
+        st.warning("⚠️ Nenhuma reunião 1:1 encontrada. Clique em **➕ Nova Reunião 1:1** para cadastrar.")
+    else:
+        # =========================================================================
+        # 1) PRÓXIMO CICLO (6 MESES) E 2) STATUS (COM A NOVA REGRA)
+        # =========================================================================
+        dt_reuniao_series = pd.to_datetime(df_reunioes['data_reuniao'], errors='coerce')
+        df_reunioes['proximo_ciclo'] = dt_reuniao_series + pd.DateOffset(months=6)
+
+        hoje = pd.Timestamp.now().normalize()
+
+        def calcular_status(row):
+            dt_reuniao = pd.to_datetime(row.get('data_reuniao'), errors='coerce')
+            dt_prox = pd.to_datetime(row.get('proximo_ciclo'), errors='coerce')
+            realizada = bool(row.get('Realizada', False))
+
+            if pd.isna(dt_reuniao):
+                return "-"
+
+            dt_reuniao_norm = dt_reuniao.normalize()
+            dt_prox_norm = dt_prox.normalize() if pd.notna(dt_prox) else None
+
+            # Condição 1: data atual > próximo ciclo
+            cond_ciclo_vencido = (dt_prox_norm is not None) and (hoje > dt_prox_norm)
+            
+            # Condição 2: data atual > data_reuniao E não foi realizada
+            cond_nao_realizada_passada = (hoje > dt_reuniao_norm) and (not realizada)
+
+            if cond_ciclo_vencido or cond_nao_realizada_passada:
+                return "🔴 Atrasada"
+            return "🟢 Em dia"
+
+        df_reunioes['status_ciclo'] = df_reunioes.apply(calcular_status, axis=1)
+
+        # Filtros de cabeçalho
+        st.markdown("### 🔍 Filtros de Reuniões")
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        with col_f1:
+            gestores_unicos = sorted([g for g in df_reunioes['gestor'].dropna().unique() if str(g).strip()])
+            filtro_gestor = st.multiselect("Filtrar por Gestor", options=gestores_unicos, default=[], placeholder="Todos os gestores", key="filt_r11_gestor")
+        with col_f2:
+            status_realizada = st.selectbox("Status de Realização", options=["Todas", "Apenas Realizadas", "Apenas Pendentes"], index=0, key="filt_r11_realizada")
+        with col_f3:
+            filtro_status_ciclo = st.selectbox("Status", options=["Todos", "Apenas Atrasadas", "Apenas Em dia"], index=0, key="filt_r11_ciclo")
+        with col_f4:
+            status_senior = st.selectbox("Info Senior", options=["Todas", "Apenas Marcadas (True)", "Apenas Não Marcadas (False)"], index=0, key="filt_r11_senior")
+
+        df_grid = df_reunioes.copy()
+        if filtro_gestor:
+            df_grid = df_grid[df_grid['gestor'].isin(filtro_gestor)]
+        if status_realizada == "Apenas Realizadas":
+            df_grid = df_grid[df_grid['Realizada'] == True]
+        elif status_realizada == "Apenas Pendentes":
+            df_grid = df_grid[df_grid['Realizada'] == False]
+
+        if filtro_status_ciclo == "Apenas Atrasadas":
+            df_grid = df_grid[df_grid['status_ciclo'] == "🔴 Atrasada"]
+        elif filtro_status_ciclo == "Apenas Em dia":
+            df_grid = df_grid[df_grid['status_ciclo'] == "🟢 Em dia"]
+
+        if status_senior == "Apenas Marcadas (True)":
+            df_grid = df_grid[df_grid['Info_Senior'] == True]
+        elif status_senior == "Apenas Não Marcadas (False)":
+            df_grid = df_grid[df_grid['Info_Senior'] == False]
+
+        # Métricas de resumo
+        c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+        c_m1.metric("Total de Reuniões", len(df_grid))
+        c_m2.metric("✅ Realizadas", len(df_grid[df_grid['Realizada'] == True]))
+        c_m3.metric("🔴 Atrasadas", len(df_grid[df_grid['status_ciclo'] == "🔴 Atrasada"]))
+        c_m4.metric("🟢 Em dia", len(df_grid[df_grid['status_ciclo'] == "🟢 Em dia"]))
+        st.markdown("---")
+
+        # Exibição do Grid (SEM a coluna ID)
+        st.dataframe(
+            df_grid[['colaborador', 'gestor', 'squads', 'data_reuniao', 'proximo_ciclo', 'status_ciclo', 'Info_Senior', 'Realizada', 'observacao']],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "colaborador": st.column_config.TextColumn("Colaborador", width="large"),
+                "gestor": st.column_config.TextColumn("Gestor", width="medium"),
+                "squads": st.column_config.TextColumn("Squads", width="large", help="Squads vinculados separados por vírgula"),
+                "data_reuniao": st.column_config.DateColumn("Data da Reunião", format="DD/MM/YYYY"),
+                "proximo_ciclo": st.column_config.DateColumn("Próximo Ciclo", format="DD/MM/YYYY", help="Data sugerida 6 meses após a reunião"),
+                "status_ciclo": st.column_config.TextColumn("Status", width="small", help="Atrasada se hoje > próximo ciclo ou se hoje > data da reunião e não realizada"),
+                "Info_Senior": st.column_config.CheckboxColumn("Senior"),
+                "Realizada": st.column_config.CheckboxColumn("Realizada"),
+                "observacao": st.column_config.TextColumn(
+                    "Observação",
+                    width="large",
+                    help="Clique duas vezes ou expanda a linha para ver o texto completo"
+)
+            }
+        )
+
+        st.markdown("---")
+        st.markdown("### Ações")
+        opcoes_reuniao = [
+            f"{row['id']} - {row['colaborador']} (Data: {pd.to_datetime(row['data_reuniao']).strftime('%d/%m/%Y') if pd.notna(row['data_reuniao']) else '-'} | Status: {row['status_ciclo']})"
+            for _, row in df_grid.iterrows()
+        ]
+        if opcoes_reuniao:
+            reuniao_selecionada = st.selectbox("Selecione uma reunião para editar ou excluir:", options=opcoes_reuniao, index=0)
+            if reuniao_selecionada:
+                r_id = int(reuniao_selecionada.split(" - ")[0])
+                r_dados = df_reunioes[df_reunioes['id'] == r_id].iloc[0].to_dict()
+                col_e, col_d = st.columns(2)
+                with col_e:
+                    if st.button("✏️ Editar Reunião", width="stretch", key="btn_edit_r11"):
+                        st.session_state.reuniao_editando = r_dados
+                        st.session_state.mostrar_form_reuniao = True
+                        st.rerun()
+                with col_d:
+                    if st.button("🗑️ Excluir Reunião", width="stretch", type="secondary", key="btn_del_r11"):
+                        st.session_state.mostrar_confirmacao_exclusao_reuniao = r_id
+                        st.rerun()
+
+    # Confirmação de exclusão
+    if st.session_state.get('mostrar_confirmacao_exclusao_reuniao'):
+        r_del_id = st.session_state.mostrar_confirmacao_exclusao_reuniao
+        st.warning(f"⚠️ Deseja realmente excluir o registro de reunião ID #{r_del_id}?")
+        col_s, col_n = st.columns(2)
+        with col_s:
+            if st.button("✅ Sim, Excluir", width="stretch", type="primary", key="btn_sim_del_r11"):
+                sucesso, msg = deletar_reuniao_11(r_del_id)
+                if sucesso:
+                    st.success(f"✅ {msg}")
+                    st.session_state.mostrar_confirmacao_exclusao_reuniao = None
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+        with col_n:
+            if st.button("❌ Não, Cancelar", width="stretch", key="btn_nao_del_r11"):
+                st.session_state.mostrar_confirmacao_exclusao_reuniao = None
+                st.rerun()
+
+    # Formulário de Cadastro / Edição
+    if st.session_state.get('mostrar_form_reuniao'):
+        st.markdown("---")
+        st.subheader("📝 " + ("Editar Reunião 1:1" if st.session_state.reuniao_editando else "Nova Reunião 1:1"))
+        dados_form = st.session_state.reuniao_editando or {}
+        colaboradores_opts = listar_colaboradores_options()
+        if not colaboradores_opts:
+            st.error("⚠️ Nenhum colaborador ativo cadastrado para associar à reunião.")
+            return
+
+        with st.form("form_reuniao_11"):
+            colab_dict = {c['id']: f"{c['colaborador_ponto']} ({c['cargo']})" for c in colaboradores_opts}
+            colab_ids = list(colab_dict.keys())
+            colab_labels = list(colab_dict.values())
+            
+            id_atual = dados_form.get('id_colab')
+            idx_selecionado = colab_ids.index(int(id_atual)) if id_atual and int(id_atual) in colab_ids else 0
+
+            col_form1, col_form2 = st.columns(2)
+            with col_form1:
+                label_escolhido = st.selectbox("Colaborador *", options=colab_labels, index=idx_selecionado)
+                id_colab_escolhido = colab_ids[colab_labels.index(label_escolhido)]
+                
+                data_val = dados_form.get('data_reuniao')
+                if data_val and isinstance(data_val, str):
+                    try: data_val = datetime.strptime(data_val, "%Y-%m-%d").date()
+                    except: data_val = datetime.now().date()
+                elif hasattr(data_val, 'date'):
+                    data_val = data_val.date()
+                elif not data_val:
+                    data_val = datetime.now().date()
+
+                data_reuniao_input = st.date_input("Data da Reunião *", value=data_val, min_value=MIN_DATA, max_value=MAX_DATA, format="DD/MM/YYYY")
+
+            with col_form2:
+                info_senior_input = st.checkbox("Info Senior (Senior)", value=bool(dados_form.get('Info_Senior', False)))
+                realizada_input = st.checkbox("Realizada", value=bool(dados_form.get('Realizada', False)))
+
+            obs_input = st.text_area("Observação", value=str(dados_form.get('observacao') or ''), max_chars=520, placeholder="Notas e alinhamentos da reunião 1:1...")
+
+            st.markdown("---")
+            col_save, col_canc = st.columns(2)
+            with col_save:
+                submitted = st.form_submit_button("💾 Salvar Reunião", width="stretch", type="primary")
+            with col_canc:
+                cancelled = st.form_submit_button("❌ Cancelar", width="stretch")
+
+            if cancelled:
+                st.session_state.reuniao_editando = None
+                st.session_state.mostrar_form_reuniao = False
+                st.rerun()
+
+            if submitted:
+                if not id_colab_escolhido:
+                    st.error("⚠️ O colaborador é obrigatório.")
+                elif not data_reuniao_input:
+                    st.error("⚠️ A data da reunião é obrigatória.")
+                else:
+                    if st.session_state.reuniao_editando:
+                        sucesso, msg = atualizar_reuniao_11(
+                            st.session_state.reuniao_editando['id'],
+                            id_colab_escolhido,
+                            data_reuniao_input,
+                            info_senior_input,
+                            realizada_input,
+                            obs_input
+                        )
+                    else:
+                        sucesso, msg = criar_reuniao_11(
+                            id_colab_escolhido,
+                            data_reuniao_input,
+                            info_senior_input,
+                            realizada_input,
+                            obs_input
+                        )
+
+                    if sucesso:
+                        st.success(f"✅ {msg}")
+                        st.session_state.reuniao_editando = None
+                        st.session_state.mostrar_form_reuniao = False
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
 
 # =============================================================================
 # FATURAMENTO
