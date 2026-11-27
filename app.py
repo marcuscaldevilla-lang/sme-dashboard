@@ -81,22 +81,39 @@ def inject_custom_css():
 
 def multiselect_with_toggle(label: str, options: list, default: list, key: str):
     if not options: options = []
+    
+    # Inicializa apenas na primeira vez (quando a key ainda não existe)
     if key not in st.session_state:
         st.session_state[key] = [d for d in default if d in options] if default else []
     else:
+        # Mantém apenas valores que ainda estão nas opções disponíveis
         st.session_state[key] = [v for v in st.session_state[key] if v in options]
-        if not st.session_state[key] and options:
-            st.session_state[key] = list(options)
+        # ⚠️ REMOVIDO: Não re-preenche automaticamente quando a lista fica vazia
+        # O usuário deve poder ter seleção vazia se quiser
+    
     st.sidebar.markdown(f"**{label}**")
     col_btn1, col_btn2 = st.sidebar.columns(2)
     with col_btn1:
         if st.sidebar.button("✅ Todos", key=f"{key}_btn_all", use_container_width=True):
-            st.session_state[key] = list(options); st.rerun()
+            st.session_state[key] = list(options)
+            st.rerun()
     with col_btn2:
         if st.sidebar.button("❌ Nenhum", key=f"{key}_btn_none", use_container_width=True):
-            st.session_state[key] = []; st.rerun()
-    selected = st.sidebar.multiselect(label, options=options, default=st.session_state[key], key=key, label_visibility="collapsed")
-    if selected != st.session_state[key]: st.session_state[key] = selected
+            st.session_state[key] = []
+            st.rerun()
+    
+    selected = st.sidebar.multiselect(
+        label, 
+        options=options, 
+        default=st.session_state[key], 
+        key=key, 
+        label_visibility="collapsed"
+    )
+    
+    # Sincroniza alterações manuais do usuário no multiselect
+    if selected != st.session_state[key]:
+        st.session_state[key] = selected
+    
     return selected
 
 # =============================================================================
