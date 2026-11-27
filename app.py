@@ -2520,7 +2520,7 @@ def _render_colaboradores_info(df_colaboradores_filtrados=None):
             with col3:
                 email = st.text_input("E-mail Corporativo", value=colaborador.get('email', ''))
                 local = st.text_input("Local", value=colaborador.get('local', ''))
-                os_val = st.text_input("Sistema Operacional", value=colaborador.get('os', ''))
+                os_val = st.text_input("O.S", value=colaborador.get('os', ''))
             st.markdown("#### 💼 Dados Profissionais")
             col1, col2, col3 = st.columns(3)
             with col1:
