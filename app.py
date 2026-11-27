@@ -3093,18 +3093,32 @@ def verificar_faturamento_existente(ano: int, mes: int) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"Erro ao verificar faturamento existente: {e}"); return None
 
-@st.cache_data(ttl=120, show_spinner=False)
-def buscar_detalhes_faturamento(id_faturamento: int) -> pd.DataFrame:
+@st.cache_data(ttl=30, show_spinner=False)
+def buscar_detalhes_faturamento(id_faturamento: int, cache_buster: str = "") -> pd.DataFrame:
+    """
+    Busca detalhes do faturamento com cache de 30 segundos.
+    O parâmetro cache_buster força invalidação quando necessário.
+    """
     db_url = os.getenv("NEON_DATABASE_URL")
     if not db_url: return pd.DataFrame()
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT profissional, cargo, nivel, data_inicio, promocao_cargo, novo_colaborador, data_saida, horas_trabalhadas, horas_afast_acordado, horas_afast_legal, horas_arredondadas, valor_profissional, valor_recalculado FROM faturamento_detalhe WHERE id_faturamento = %s ORDER BY profissional", (id_faturamento,))
+            cur.execute("""
+                SELECT profissional, cargo, nivel, data_inicio, promocao_cargo, 
+                       novo_colaborador, data_saida, horas_trabalhadas, 
+                       horas_afast_acordado, horas_afast_legal, horas_arredondadas, 
+                       valor_profissional, valor_recalculado 
+                FROM faturamento_detalhe 
+                WHERE id_faturamento = %s 
+                ORDER BY profissional
+            """, (id_faturamento,))
             rows = cur.fetchall()
-        conn.close(); return pd.DataFrame(rows)
+        conn.close()
+        return pd.DataFrame(rows)
     except Exception as e:
-        logger.error(f"Erro ao buscar detalhes do faturamento: {e}"); return pd.DataFrame()
+        logger.error(f"Erro ao buscar detalhes do faturamento: {e}")
+        return pd.DataFrame()
 
 def salvar_faturamento_no_banco(ano: int, mes: int, dias_uteis: float, total_faturado: float, df_detalhes: pd.DataFrame) -> Tuple[bool, str]:
     db_url = os.getenv("NEON_DATABASE_URL")
@@ -3139,21 +3153,81 @@ def deletar_faturamento_existente(ano: int, mes: int) -> Tuple[bool, str]:
     try:
         conn = psycopg2.connect(db_url, connect_timeout=10)
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM faturamento_mensal WHERE ano = %s AND mes = %s", (ano, mes)); conn.commit()
-        conn.close(); st.cache_data.clear()
+            cur.execute("DELETE FROM faturamento_mensal WHERE ano = %s AND mes = %s", (ano, mes))
+            conn.commit()
+        conn.close()
+        
+        # 🆕 Limpa o cache do Streamlit para forçar recarregamento
+        st.cache_data.clear()
+        
         return True, "Faturamento deletado com sucesso."
     except Exception as e:
-        if conn: conn.rollback(); conn.close()
+        if conn: conn.rollback()
+        if conn: conn.close()
         return False, f"Erro ao deletar: {str(e)}"
 
-def calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis):
-    if 'status' in df_colaboradores.columns: df_colaboradores = df_colaboradores[df_colaboradores['status'] == 'Ativo'].copy()
-    if df_colaboradores.empty: return pd.DataFrame()
-    nivel_valor = {str(r["nivel"]).strip(): limpar_valor_monetario(r.get("valor")) for _, r in df_valores.iterrows() if str(r.get("nivel", "")).strip()}
+def calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis, ano: int, mes: int):
+    """
+    Calcula o faturamento considerando apenas colaboradores ativos no período.
+    - Inclui: data_inicio <= último dia do mês selecionado
+    - Exclui: data_saida < primeiro dia do mês selecionado (se informado)
+    """
+    if df_colaboradores.empty:
+        return pd.DataFrame()
+    
+    # Filtra apenas colaboradores Ativos
+    if 'status' in df_colaboradores.columns:
+        df_colaboradores = df_colaboradores[df_colaboradores['status'] == 'Ativo'].copy()
+    
+    if df_colaboradores.empty:
+        return pd.DataFrame()
+    
+    # =====================================================================
+    # 🆕 FILTRO POR PERÍODO (data_inicio e data_saida)
+    # =====================================================================
+    import calendar
+    ultimo_dia_do_mes = calendar.monthrange(ano, mes)[1]
+    data_fim_periodo = datetime(ano, mes, ultimo_dia_do_mes).date()
+    data_inicio_periodo = datetime(ano, mes, 1).date()
+    
+    # 1) Excluir colaboradores que ainda não tinham entrado no período
+    #    (data_inicio > último dia do mês selecionado)
+    if 'data_inicio' in df_colaboradores.columns:
+        df_colaboradores = df_colaboradores.copy()
+        df_colaboradores['data_inicio'] = pd.to_datetime(df_colaboradores['data_inicio'], errors='coerce')
+        
+        # Mantém apenas quem já tinha entrado até o último dia do mês
+        mask_entrada = df_colaboradores['data_inicio'].apply(
+            lambda x: x is not None and not pd.isna(x) and x.date() <= data_fim_periodo
+        )
+        df_colaboradores = df_colaboradores[mask_entrada].copy()
+        
+        # 2) Excluir colaboradores que já tinham saído antes do início do mês
+        if 'data_saida' in df_colaboradores.columns:
+            df_colaboradores['data_saida'] = pd.to_datetime(df_colaboradores['data_saida'], errors='coerce')
+            mask_saida = df_colaboradores['data_saida'].apply(
+                lambda x: pd.isna(x) or x.date() >= data_inicio_periodo
+            )
+            df_colaboradores = df_colaboradores[mask_saida].copy()
+    
+    if df_colaboradores.empty:
+        logger.warning(f"Nenhum colaborador ativo no período {mes}/{ano}")
+        return pd.DataFrame()
+    
+    # =====================================================================
+    # CÁLCULO DO FATURAMENTO (mantido igual)
+    # =====================================================================
+    nivel_valor = {
+        str(r["nivel"]).strip(): limpar_valor_monetario(r.get("valor"))
+        for _, r in df_valores.iterrows()
+        if str(r.get("nivel", "")).strip()
+    }
+    
     horas_por_id = {}
     for _, row in df_horasponto.iterrows():
         id_colab = row.get('id_colaborador')
-        if pd.isna(id_colab): continue
+        if pd.isna(id_colab):
+            continue
         id_colab = int(id_colab)
         horas_ponto = float(row["horas_ponto"]) if pd.notna(row.get("horas_ponto")) else 0.0
         afastamento = float(row["afastamento"]) if pd.notna(row.get("afastamento")) else 0.0
@@ -3164,27 +3238,47 @@ def calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis
             horas_por_id[id_colab]["folga"] += folga
         else:
             horas_por_id[id_colab] = {"horas_ponto": horas_ponto, "afastamento": afastamento, "folga": folga}
+    
     lista_faturamento = []
     for _, row in df_colaboradores.iterrows():
-        colab_id = int(row["id"]); colaborador_ponto = str(row["colaborador_ponto"]).strip()
-        cargo, nivel = str(row.get("cargo", "")).strip(), str(row.get("nivel", "")).strip()
-        data_inicio, data_saida = row.get("data_inicio"), row.get("data_saida")
+        colab_id = int(row["id"])
+        colaborador_ponto = str(row["colaborador_ponto"]).strip()
+        cargo = str(row.get("cargo", "")).strip()
+        nivel = str(row.get("nivel", "")).strip()
+        data_inicio = row.get("data_inicio")
+        data_saida = row.get("data_saida")
         promocao = str(row.get("promocao", "")).strip() if pd.notna(row.get("promocao")) else ""
         reposicao = str(row.get("reposicao", "")).strip() if pd.notna(row.get("reposicao")) else ""
+        
         horas_info = horas_por_id.get(colab_id)
-        if horas_info is None: horas_info = {"horas_ponto": 0.0, "afastamento": 0.0, "folga": 0.0}
-        horas_trabalhadas = horas_info["horas_ponto"]; horas_afast_legal = horas_info["afastamento"]
-        horas_afast_acordado = horas_info["folga"]; horas_arredondadas = horas_trabalhadas + horas_afast_acordado
+        if horas_info is None:
+            horas_info = {"horas_ponto": 0.0, "afastamento": 0.0, "folga": 0.0}
+        
+        horas_trabalhadas = horas_info["horas_ponto"]
+        horas_afast_legal = horas_info["afastamento"]
+        horas_afast_acordado = horas_info["folga"]
+        horas_arredondadas = horas_trabalhadas + horas_afast_acordado
+        
         valor_profissional = nivel_valor.get(nivel, 0.0)
         valor_diario = valor_profissional / dias_uteis if dias_uteis > 0 else 0.0
         valor_recalculado = round(horas_arredondadas * valor_diario, 2)
-        lista_faturamento.append({"Profissional": colaborador_ponto, "Cargo": cargo, "Nível": nivel,
+        
+        lista_faturamento.append({
+            "Profissional": colaborador_ponto,
+            "Cargo": cargo,
+            "Nível": nivel,
             "Data de Início": data_inicio.strftime("%d/%m/%Y") if pd.notna(data_inicio) else "",
-            "Promoção de Cargo": promocao, "Novo Colaborador": reposicao,
+            "Promoção de Cargo": promocao,
+            "Novo Colaborador": reposicao,
             "Data de Saída": data_saida.strftime("%d/%m/%Y") if pd.notna(data_saida) else "",
-            "Horas Trabalhadas": round(horas_trabalhadas, 2), "Horas Afast Acordado": round(horas_afast_acordado, 2),
-            "Horas Afast Legal": round(horas_afast_legal, 2), "Horas Arredondadas": round(horas_arredondadas, 2),
-            "Valor Profissional": round(valor_profissional, 2), "Valor Recalculado": valor_recalculado})
+            "Horas Trabalhadas": round(horas_trabalhadas, 2),
+            "Horas Afast Acordado": round(horas_afast_acordado, 2),
+            "Horas Afast Legal": round(horas_afast_legal, 2),
+            "Horas Arredondadas": round(horas_arredondadas, 2),
+            "Valor Profissional": round(valor_profissional, 2),
+            "Valor Recalculado": valor_recalculado
+        })
+    
     return pd.DataFrame(lista_faturamento)
 
 def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_uteis, year, month_name, month_num, pode_calcular=False):
@@ -3197,7 +3291,9 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
     if 'mostrar_alerta_recuperar' not in st.session_state: st.session_state.mostrar_alerta_recuperar = False
     if faturamento_existente and not st.session_state.faturamento_calculado:
         st.info(f"✅ Faturamento existente encontrado para **{month_name}/{year}** (ID: {faturamento_existente['id']})")
-        df_detalhes = buscar_detalhes_faturamento(faturamento_existente['id'])
+        # Cache buster baseado no timestamp atual para evitar dados stale
+        cache_buster = datetime.now().strftime("%Y%m%d%H%M%S")
+        df_detalhes = buscar_detalhes_faturamento(faturamento_existente['id'], cache_buster)
         if not df_detalhes.empty:
             df_detalhes = df_detalhes.rename(columns={'profissional': 'Profissional', 'cargo': 'Cargo', 'nivel': 'Nível', 'data_inicio': 'Data de Início', 'promocao_cargo': 'Promoção de Cargo', 'novo_colaborador': 'Novo Colaborador', 'data_saida': 'Data de Saída', 'horas_trabalhadas': 'Horas Trabalhadas', 'horas_afast_acordado': 'Horas Afast Acordado', 'horas_afast_legal': 'Horas Afast Legal', 'horas_arredondadas': 'Horas Arredondadas', 'valor_profissional': 'Valor Profissional', 'valor_recalculado': 'Valor Recalculado'})
             for col in ['Data de Início', 'Data de Saída']:
@@ -3213,7 +3309,7 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
                 if faturamento_existente: st.session_state.mostrar_alerta_recuperar = True; st.rerun()
                 else:
                     with st.spinner("Calculando faturamento..."):
-                        df_faturamento = calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis)
+                        df_faturamento = calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis, year, month_num)
                         if df_faturamento.empty: st.warning("⚠️ Nenhum colaborador ativo para calcular faturamento.")
                         else:
                             total_faturado = df_faturamento["Valor Recalculado"].sum()
@@ -3228,7 +3324,7 @@ def render_faturamento_tab(df_colaboradores, df_horasponto, df_valores, dias_ute
                     with st.spinner("Recalculando faturamento..."):
                         sucesso_del, msg_del = deletar_faturamento_existente(year, month_num)
                         if sucesso_del:
-                            df_faturamento = calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis)
+                            df_faturamento = calcular_faturamento(df_colaboradores, df_horasponto, df_valores, dias_uteis, year, month_num)
                             total_faturado = df_faturamento["Valor Recalculado"].sum()
                             sucesso_save, msg_save = salvar_faturamento_no_banco(year, month_num, dias_uteis, total_faturado, df_faturamento)
                             if sucesso_save:
